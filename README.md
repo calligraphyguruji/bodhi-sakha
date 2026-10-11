@@ -8,7 +8,7 @@ Created and owned by **Mr. Aman Mishra**.
 
 ## 🌟 Live Demo
 
-- **Production URL**: [https://basic-chatbot-kappa.vercel.app/](https://basic-chatbot-kappa.vercel.app/)
+- **Production URL**: [https://bodhi-sakha-phi.vercel.app/](https://bodhi-sakha-phi.vercel.app/)
 - **Repository**: [https://github.com/calligraphyguruji/basic-chatbot](https://github.com/calligraphyguruji/basic-chatbot)
 
 ---
@@ -92,7 +92,7 @@ Create `.env` (or configure in Vercel Project Settings) based on `.env.example`:
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-2.5-flash
 PORT=5001
-CLIENT_ORIGIN=https://basic-chatbot-kappa.vercel.app
+CLIENT_ORIGIN=https://bodhi-sakha-phi.vercel.app
 
 # Database (PostgreSQL / Supabase / Neon)
 DATABASE_URL=postgresql://user:password@host:5432/dbname
