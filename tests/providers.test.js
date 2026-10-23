@@ -22,17 +22,17 @@ test('Gemini success preserves primary routing and context',async()=>{
   assert.equal(await completeAI(options()),'gemini response');
   if(!process.env.SIM_URL){assert.equal(requests.length,1);assert.equal(requests[0].body.contents[1].role,'model');assert.equal(requests[0].body.contents[0].parts[0].text,'prior question');}
 });
-for(const failure of ['timeout','429','401','400','503','network','html','empty','malformed']) {
+for(const failure of ['timeout','429','401','400','404','503','network','html','empty','malformed']) {
   test(`Gemini ${failure} automatically falls back to Groq once`,async()=>{
     requests.length=0;
     assert.equal(await completeAI(options(`gemini:${failure}`)),'groq response');
-    if(!process.env.SIM_URL) assert.equal(requests.length,2);
+    if(!process.env.SIM_URL) {assert.equal(requests.length,2);assert.equal(requests[1].body.model,'openai/gpt-oss-120b');}
   });
 }
 test('missing Gemini skips directly to Groq',async()=>{delete process.env.GEMINI_API_KEY;try{assert.equal(await completeAI(options()),'groq response');}finally{process.env.GEMINI_API_KEY='dummy-gemini';}});
 test('missing Groq permits Gemini success',async()=>{delete process.env.GROQ_API_KEY;try{assert.equal(await completeAI(options()),'gemini response');}finally{process.env.GROQ_API_KEY='dummy-groq';}});
 test('both keys missing gives configuration error',async()=>{delete process.env.GEMINI_API_KEY;delete process.env.GROQ_API_KEY;try{await assert.rejects(completeAI(options()),{code:'CONFIGURATION'});}finally{process.env.GEMINI_API_KEY='dummy-gemini';process.env.GROQ_API_KEY='dummy-groq';}});
-for(const [scenario,code] of [['gemini:503 groq:503','UNAVAILABLE'],['gemini:429 groq:429','RATE_LIMIT'],['gemini:timeout groq:timeout','TIMEOUT'],['gemini:401 groq:401','CONFIGURATION'],['gemini:503 groq:malformed','UNAVAILABLE']]) {
+for(const [scenario,code] of [['gemini:503 groq:503','BOTH_UNAVAILABLE'],['gemini:429 groq:429','RATE_LIMIT'],['gemini:timeout groq:timeout','TIMEOUT'],['gemini:401 groq:401','CONFIGURATION'],['gemini:503 groq:malformed','BOTH_UNAVAILABLE']]) {
   test(`both fail: ${scenario}`,async()=>{await assert.rejects(completeAI(options(scenario)),{code});});
 }
 test('streaming fallback before output works',async()=>{let text='';for await(const c of routeAI({...options('gemini:503'),stream:true}))text+=c.text;assert.equal(text,'groq response');});
@@ -55,4 +55,13 @@ test('frontend detects truncated SSE and retains partial response',async()=>{
   let text='';
   await assert.rejects(readChatResponse(new Response('event: delta\ndata: {"text":"Partial"}\n\n',{headers:{'Content-Type':'text/event-stream'}}),value=>{text=value;}));
   assert.equal(text,'Partial');
+});
+
+test('invalid upstream request does not spend a fallback attempt',async()=>{
+  requests.length=0;
+  await assert.rejects(completeAI(options('gemini:422')),{code:'INVALID_REQUEST',status:400});
+  if(!process.env.SIM_URL) assert.equal(requests.length,1);
+});
+test('frontend handles missing API route and HTML routing failures',async()=>{
+  for(const status of [404,502,200]) await assert.rejects(readChatResponse(new Response('<html>routing failure</html>',{status}),()=>{}),{code:'NETWORK'});
 });

@@ -37,7 +37,7 @@ try {
   await input.fill('A follow-up question');await page.getByRole('button',{name:'Send message',exact:true}).click();
   await page.waitForFunction(()=>document.querySelectorAll('.user-row').length===2 && !document.querySelector('button[aria-label="Send message"]').disabled);
   assert.equal(sent.at(-1).history.filter(h=>h.text==='A clear answer.').length,1);
-  assert.equal(sent.at(-1).history.some(h=>h.text.includes('temporarily unable')),false);
+  assert.equal(sent.at(-1).history.some(h=>h.text.includes('trouble connecting')),false);
   assert.deepEqual(errors,[]);
   console.log('Browser checks passed: send, response, friendly error, retry, stable request ID, no duplicate user turn, context preservation, no uncaught exceptions.');
 } finally {await browser.close();}

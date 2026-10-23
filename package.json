@@ -8,6 +8,7 @@
     "start": "vercel dev",
     "dev": "vite",
     "build": "vite build",
+    "check:production-config": "node scripts/check-production-config.js",
     "lint": "eslint .",
     "test": "node --test tests/*.test.js",
     "preview": "vite preview",

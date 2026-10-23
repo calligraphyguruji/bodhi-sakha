@@ -33,6 +33,8 @@ test('gateway contract, auth, ownership, persistence and retry',async()=>{
   assert.equal((await call('/api/missing',{})).statusCode,404);
   assert.equal((await call('/api/chat',{message:'x'},{origin:'https://evil.test'})).statusCode,403);
   assert.equal((await call('/api/chat',{message:''})).statusCode,400);
+  assert.equal((await call('/api/chat',{}, {method:'PUT'})).statusCode,405);
+  assert.equal((await call('/api/chat','{invalid')).statusCode,400);
   const a=(await call('/api/auth?action=register',{name:'Tester',email:'a@test.example',password:'password123',confirmPassword:'password123'})).data;
   assert.ok(a.token);
   assert.equal((await call('/api/auth?action=login',{email:'a@test.example',password:'wrong'})).statusCode,401);
@@ -64,8 +66,20 @@ test('SSE partial failure is explicit and provider does not switch',async()=>{
 });
 test('production fails closed without a durable database',async()=>{
   process.env.NODE_ENV='production';
-  try {const res=await call('/api/chat',{message:'test'});assert.equal(res.statusCode,503);assert.equal(res.data.error.code,'CONFIGURATION');}
-  finally {process.env.NODE_ENV='test';}
+  const start = requests.length;
+  const originalInfo = console.info;
+  const logs = [];
+  console.info = value => logs.push(JSON.parse(value));
+  try {
+    const res=await call('/api/chat',{message:'sensitive-question-never-log'});
+    assert.equal(res.statusCode,503);assert.equal(res.data.error.code,'CONFIGURATION');
+    assert.equal(requests.length,start); // Both AI keys exist, but the gateway fails first.
+    assert.ok(logs.some(entry => entry.category === 'DATABASE_URL_MISSING'));
+    assert.ok(logs.every(entry => entry.requestId === res.headers['x-request-id']));
+    assert.equal(logs.at(-1).event,'request.failed');
+    assert.doesNotMatch(JSON.stringify(logs),/sensitive-question|dummy-gemini|dummy-groq/);
+  }
+  finally {console.info = originalInfo;process.env.NODE_ENV='test';}
 });
 test('JWT signing has no default secret',()=>{
   const secret=process.env.JWT_SECRET;delete process.env.JWT_SECRET;

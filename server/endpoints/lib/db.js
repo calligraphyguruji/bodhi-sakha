@@ -11,7 +11,7 @@ const DATA_DIR = path.resolve(process.env.LOCAL_DATA_DIR || path.join(process.cw
 const LOCAL_DB_FILE = path.join(DATA_DIR, 'db.json');
 function allowLocalStore() {
   if (process.env.NODE_ENV === 'production' || (process.env.VERCEL && !process.env.VERCEL_DEV) || process.env.ALLOW_LOCAL_DB !== 'true') {
-    throw new AppError('CONFIGURATION', 503, undefined, false);
+    throw Object.assign(new AppError('CONFIGURATION', 503, undefined, false), { category: 'DATABASE_URL_MISSING' });
   }
 }
 
@@ -517,11 +517,19 @@ export const db = {
 export async function consumeRateLimit(bucket, limit) {
   const p = getPool();
   if (!p) { allowLocalStore(); return true; } // development only; no fake production limiter
-  const result = await p.query(`INSERT INTO rate_limits(bucket,count,expires_at)
+  let result;
+  try {
+    result = await p.query(`INSERT INTO rate_limits(bucket,count,expires_at)
     VALUES ($1,1,NOW()+INTERVAL '1 minute') ON CONFLICT(bucket) DO UPDATE
     SET count=CASE WHEN rate_limits.expires_at <= NOW() THEN 1 ELSE rate_limits.count+1 END,
         expires_at=CASE WHEN rate_limits.expires_at <= NOW() THEN NOW()+INTERVAL '1 minute' ELSE rate_limits.expires_at END
     RETURNING count`, [bucket]);
+  } catch (error) {
+    const schemaMissing = error.code === '42P01' || error.code === '42703';
+    throw Object.assign(new AppError(schemaMissing ? 'CONFIGURATION' : 'UNAVAILABLE', 503, undefined, !schemaMissing), {
+      category: schemaMissing ? 'DATABASE_SCHEMA_MISSING' : 'DATABASE_UNAVAILABLE',
+    });
+  }
   return result.rows[0].count <= limit;
 }
 export async function claimChatRequest(conversationId, requestId) {

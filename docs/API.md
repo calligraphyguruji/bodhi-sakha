@@ -41,14 +41,14 @@ Before output begins, errors use their HTTP status and this shape:
   "success": false,
   "error": {
     "code": "UNAVAILABLE",
-    "message": "Sorry, Bodhi-Sakha is temporarily unable to respond. Please try again in a few moments.",
+    "message": "I’m having trouble connecting to the AI service right now. Please try again in a moment.",
     "retryable": true
   },
-  "reply": "Sorry, Bodhi-Sakha is temporarily unable to respond. Please try again in a few moments."
+  "reply": "I’m having trouble connecting to the AI service right now. Please try again in a moment."
 }
 ```
 
-Codes/status: INVALID_REQUEST 400, UNAUTHORIZED 401, FORBIDDEN 403, NOT_FOUND 404, METHOD_NOT_ALLOWED 405, REQUEST_PENDING 409, PAYLOAD_TOO_LARGE 413, UNSUPPORTED_MEDIA_TYPE 415, RATE_LIMIT 429, CONFIGURATION/UNAVAILABLE 503, TIMEOUT 504. Rate-limit gateway responses include Retry-After: 60. Raw upstream errors are never returned. Retry is manual, bounded by the caller; do not automatically loop on errors.
+Codes/status: INVALID_REQUEST 400, UNAUTHORIZED 401, FORBIDDEN 403, NOT_FOUND 404, METHOD_NOT_ALLOWED 405, REQUEST_PENDING 409, PAYLOAD_TOO_LARGE 413, UNSUPPORTED_MEDIA_TYPE 415, RATE_LIMIT 429, CONFIGURATION/UNAVAILABLE/BOTH_UNAVAILABLE 503, TIMEOUT 504. Rate-limit gateway responses include Retry-After: 60. Raw upstream errors are never returned. Retry is manual, bounded by the caller; do not automatically loop on errors.
 
 ## Existing resource routes
 
@@ -76,3 +76,5 @@ Success payloads and query/path action variants are retained. The gateway normal
 Large-upload tokens constrain path and size; arbitrary URLs are never accepted for server downloads. Finalization checks session ownership again. Extraction text is capped at 100,000 characters and chat document context at 15,000 per source. The original document is not retained as permanent file storage. Keep Blob temporary-object lifecycle cleanup enabled for abandoned uploads.
 
 Resource collections currently retain the existing unpaginated API contract. Large histories, especially repeated generated image data URLs, may exceed function response limits; test representative account sizes before release. Authentication uses localStorage bearer tokens as in the existing app; logout is client-side token removal rather than immediate server revocation.
+
+Every gateway response includes a server-generated `X-Request-ID`. Runtime Logs correlate this ID with request outcome, provider attempts, fallback activation, status and duration. Internal auth/model/database categories are never sent in the response. Invalid provider requests return 400 without fallback; provider authentication, retired model, quota, timeout and service failures can fall back before any output.

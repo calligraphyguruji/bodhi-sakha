@@ -48,7 +48,7 @@ For explicitly local-only JSON development instead of PostgreSQL, leave `DATABAS
 | `GEMINI_API_KEY` | Server-only Gemini key from [Google AI Studio](https://aistudio.google.com/apikey) |
 | `GROQ_API_KEY` | Server-only Groq key from [Groq Console](https://console.groq.com/keys) |
 | `GEMINI_MODEL` | Default `gemini-flash-latest`; choose an available model for your account |
-| `GROQ_MODEL` | Default `llama-3.3-70b-versatile`; configurable without client changes |
+| `GROQ_MODEL` | Default `openai/gpt-oss-120b`; configurable without client changes |
 | `DATABASE_URL` | Required production PostgreSQL URL, preferably pooled, with verified TLS |
 | `JWT_SECRET` | Required random signing secret, at least 32 characters |
 | `BLOB_READ_WRITE_TOKEN` | Private Vercel Blob token; required for uploads over 3 MB |
@@ -59,7 +59,7 @@ For explicitly local-only JSON development instead of PostgreSQL, leave `DATABAS
 
 Enable API access/billing and sufficient quotas for the chosen models. Configure both AI keys to obtain fallback. One configured key works alone; neither configured key returns a friendly configuration error for AI requests. Canned identity/greeting/date/weather-location prompts do not require an AI call. Server secrets are read at runtime. Never use `VITE_` for any secret. `VITE_API_BASE_URL`, `PORT`, `CLIENT_ORIGIN`, and the previous adjustable chat limits are no longer used. Remove obsolete deployment variables.
 
-The provider adapters use Google's and Groq's supported HTTP APIs, so no AI SDK or new server framework is required. Both providers receive the same assistant personality, bounded history, document context and educational instructions. Groq's supported default is documented in [Groq's model reference](https://console.groq.com/docs/model/llama-3.3-70b-versatile); Google's model aliases are documented in [Gemini models](https://ai.google.dev/gemini-api/docs/models).
+The provider adapters use Google's and Groq's supported HTTP APIs, so no AI SDK or new server framework is required. Both providers receive the same assistant personality, bounded history, document context and educational instructions. Groq's supported default is documented in [Groq's supported models](https://console.groq.com/docs/models); Google's model aliases are documented in [Gemini models](https://ai.google.dev/gemini-api/docs/models).
 
 Each provider gets **one attempt** with an 18-second deadline, including reading its response; the text routing budget is 36 seconds. There are zero automatic same-provider retries, including for 429/authentication/invalid-request errors. Gemini is skipped when its key is missing. Groq receives the original context when fallback is needed. After a response delta is sent, providers are never switched. The browser receives explicit SSE error/completion events and can retry manually without inserting another user message. The request ID is reused; PostgreSQL claims/transactions return an already completed answer and prevent duplicate saved turns. A concurrent pending request returns 409; stale claims can be reclaimed after two minutes.
 
@@ -125,11 +125,11 @@ See [verification results](docs/MIGRATION_RESULTS.md) for checks actually run in
 
 ## Security and troubleshooting
 
-- Secrets and `.env*` are ignored, with `.env.example` the only exception. No AI key is referenced by React. Health exposes no configuration, provider output or credentials. Logs contain only scope/code/status, never prompts, keys, upstream errors or stack traces.
+- Secrets and `.env*` are ignored, with `.env.example` the only exception. No AI key is referenced by React. Health exposes no configuration, provider output or credentials. Logs contain server-generated request IDs, fixed event/category labels, provider names, statuses and durations; never prompts, keys, upstream bodies or stack traces.
 - Gateway rejects cross-origin browser requests; bearer authorization remains required for private CRUD. CORS is not protection against scripts or direct API callers. SQL queries are parameterized and scoped to owners. Invalid/absent JWT configuration cannot mint tokens. Existing bearer tokens remain in localStorage; preserve the CSP and avoid untrusted scripts because XSS could read them.
 - Production rate limits are PostgreSQL-backed atomic counters: 10 authentication requests, 20 combined chat/image/file calls, and 120 other API calls per identity per minute. Guest identities use Vercel's forwarded client IP; signed-in identities use user ID. Multi-step large uploads consume several calls. Enable Vercel Firewall rules for volumetric attacks, bot traffic and account creation abuse before a public launch. Database limits alone cannot stop bandwidth floods or attackers rotating identities/IPs. Periodically remove expired `rate_limits` records.
 - Limits: 4.25 MiB gateway JSON, 512 KB chat JSON, 4,000 message characters, 12 retained history entries × 2,000 characters, 15,000 characters per attached context source, 30 memory facts, 4,096 maximum generation tokens and 65,536 output characters. Oversized input is rejected or bounded before generation; invalid input does not reach providers. Treat retrieved documents/web text as untrusted data. Generated advice is model output, not trusted application instructions.
-- **Configuration error / 503:** add real AI keys; verify PostgreSQL/JWT configuration; migrate SQL schema; redeploy. Missing database configuration intentionally fails closed for data/limited API routes.
+- **Configuration error / 503:** inspect Runtime Logs for the request ID; check AI credentials, retired model overrides and PostgreSQL/JWT configuration; migrate SQL schema if needed; redeploy. Run `npm run check:production-config` with the target environment securely injected. Missing database configuration intentionally fails closed for data/limited API routes.
 - **429:** wait a minute. If the provider quota is exhausted, fallback is attempted once; don't repeatedly retry. The browser offers a manual Retry button where appropriate.
 - **Timeout / partial answer:** the interface keeps the original user message and partial text with an error. Retry replaces the failed bot slot. Provider output never becomes raw error text in model history.
 - **Large upload fails:** verify the Blob store is private, the token is connected, the ticket has not expired and the file is supported and ≤15 MB. Extraction of damaged/encrypted PDFs or DOCX may fail safely. Small uploads work without Blob.
@@ -139,3 +139,5 @@ See [verification results](docs/MIGRATION_RESULTS.md) for checks actually run in
 - **Voice unavailable:** browser speech support/permissions vary. Voice remains a browser integration, not a WebSocket backend requirement.
 
 MIT License.
+
+See [the October 2026 chat failure audit](docs/CHAT_FAILURE_AUDIT.md) for confirmed defects, verification results and deployment steps.

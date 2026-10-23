@@ -1,8 +1,9 @@
 const messages = {
-  UNAVAILABLE: 'Sorry, Bodhi-Sakha is temporarily unable to respond. Please try again in a few moments.',
-  NETWORK: 'Unable to connect right now. Please check your internet connection and try again.',
-  TIMEOUT: 'Bodhi-Sakha is taking longer than expected. Please try again.',
-  CONFIGURATION: 'Bodhi-Sakha is temporarily unavailable due to a configuration issue. Please try again later.',
+  UNAVAILABLE: 'I’m having trouble connecting to the AI service right now. Please try again in a moment.',
+  NETWORK: 'Unable to connect to the server. Please check your internet connection.',
+  TIMEOUT: 'The response is taking longer than expected. Please try again.',
+  CONFIGURATION: 'Bodhi-Sakha is temporarily unavailable. Please try again later.',
+  BOTH_UNAVAILABLE: 'Both AI services are temporarily unavailable. Please try again shortly.',
   RATE_LIMIT: 'Bodhi-Sakha is receiving too many requests right now. Please wait a moment and try again.',
   UNAUTHORIZED: 'Please sign in again to continue this conversation.',
   NOT_FOUND: 'This conversation is no longer available. Please start a new chat.',
@@ -23,9 +24,10 @@ export function friendlyChatError(error) {
 export async function readChatResponse(response, onDelta) {
   if (!response.ok) {
     const data = await response.json().catch(() => null);
-    throw new ChatError(data?.error?.code || (response.status === 429 ? 'RATE_LIMIT' : 'UNAVAILABLE'), data?.error?.retryable !== false);
+    throw new ChatError(data?.error?.code || (response.status === 429 ? 'RATE_LIMIT' : response.status === 404 || !response.headers.get('content-type')?.includes('application/json') ? 'NETWORK' : 'UNAVAILABLE'), data?.error?.retryable !== false);
   }
   if (!response.headers.get('content-type')?.includes('text/event-stream')) {
+    if (!response.headers.get('content-type')?.includes('application/json')) throw new ChatError('NETWORK');
     const data = await response.json().catch(() => null);
     if (typeof data?.reply !== 'string' || !data.reply.trim()) throw new ChatError();
     onDelta(data.reply);

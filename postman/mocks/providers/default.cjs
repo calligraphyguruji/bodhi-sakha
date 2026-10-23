@@ -8,9 +8,9 @@ async function handler(req,res) {
   if (!req.url.includes('/models/') && !req.url.endsWith('/chat/completions')) {res.writeHead(501);res.end();return;}
   const provider=req.url.includes('/models/')?'gemini':'groq';
   const text=JSON.stringify(body);
-  const match=text.match(new RegExp(provider+':(429|401|400|503|timeout|malformed|empty|partial|network|html)'));
+  const match=text.match(new RegExp(provider+':(429|401|400|404|422|503|timeout|malformed|empty|partial|network|html)'));
   const mode=match?.[1];
-  if (/^\d+$/.test(mode||'')) {res.writeHead(Number(mode),{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:'RAW_PROVIDER_SECRET_DO_NOT_DISPLAY',status:mode}}));return;}
+  if (/^\d+$/.test(mode||'')) {res.writeHead(Number(mode),{'Content-Type':'application/json'});res.end(JSON.stringify({error:{message:mode==='400'?'model not supported':mode==='422'?'Invalid request':'RAW_PROVIDER_SECRET_DO_NOT_DISPLAY',status:mode}}));return;}
   if (mode==='network') {req.socket.destroy();return;}
   if (mode==='html') {res.writeHead(502,{'Content-Type':'text/html'});res.end('<html>Upstream gateway secret</html>');return;}
   if (mode==='timeout') await new Promise(r=>setTimeout(r,180));

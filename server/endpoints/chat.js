@@ -131,6 +131,7 @@ export default async function handler(req, res) {
     }
     return res.status(200).json({ reply });
   } catch (error) {
+    res.aiErrorCode = error instanceof AppError ? error.code : 'UNAVAILABLE';
     logFailure('chat', error);
     if (claimed) await failChatRequest(input.conversationId, requestId).catch(e => logFailure('chat.release', e));
     if (started) {

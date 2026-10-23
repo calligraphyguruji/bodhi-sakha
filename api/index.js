@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { withDiagnostics } from '../lib/server/diagnostics.js';
 import authHandler from '../server/endpoints/auth.js';
 import chatHandler from '../server/endpoints/chat.js';
 import conversationsHandler from '../server/endpoints/conversations.js';
@@ -15,7 +16,7 @@ import { parseBody, MAX_BODY_BYTES } from '../lib/server/validation.js';
 export const config = { api: { bodyParser: false } };
 const routes = { chat: chatHandler, auth: authHandler, conversations: conversationsHandler, files: filesHandler, images: imagesHandler, memory: memoryHandler };
 
-export default async function handler(req, res) {
+async function handler(req, res) {
   // Normalize retained CRUD validation errors at the shared API boundary.
   const json = res.json.bind(res);
   res.json = value => {
@@ -38,6 +39,10 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: 'ok', service: 'Bodhi-Sakha' });
     }
     if (segments[0] !== 'api' || !Object.hasOwn(routes, route)) throw new AppError('NOT_FOUND', 404, 'API route not found.', false);
+    if (route === 'chat' && req.method !== 'POST') {
+      res.setHeader('Allow', 'GET, POST');
+      throw new AppError('METHOD_NOT_ALLOWED', 405, 'Please send a POST request.', false);
+    }
     if (req.method !== 'GET' && req.method !== 'DELETE') {
       const type = req.headers?.['content-type'] || '';
       if (!type.toLowerCase().startsWith('application/json')) throw new AppError('UNSUPPORTED_MEDIA_TYPE',415,'Please send JSON.',false);
@@ -71,3 +76,5 @@ export default async function handler(req, res) {
     return sendError(res, error);
   }
 }
+
+export default withDiagnostics(handler);
