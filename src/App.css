@@ -1378,3 +1378,6 @@
   }
 }
 
+
+.chat-error { margin-top: 0.6rem; color: var(--text-primary); }
+.chat-error p { margin: 0 0 0.5rem; }

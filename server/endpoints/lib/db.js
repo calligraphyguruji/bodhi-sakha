@@ -1,16 +1,19 @@
 import fs from 'fs';
+import crypto from 'node:crypto';
 import path from 'path';
 import pg from 'pg';
+import { AppError } from '../../../lib/server/errors.js';
 
 const { Pool } = pg;
 
-// Local fallback JSON file when DATABASE_URL is not set
-// In serverless environments (e.g. AWS Lambda / Vercel), only /tmp is writable
-const IS_SERVERLESS = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.LAMBDA_TASK_ROOT);
-const DATA_DIR = IS_SERVERLESS
-  ? path.resolve('/tmp', '.data')
-  : path.resolve(process.cwd(), '.data');
+// Persistent local storage is explicitly opt-in and never available in production.
+const DATA_DIR = path.resolve(process.env.LOCAL_DATA_DIR || path.join(process.cwd(), '.data'));
 const LOCAL_DB_FILE = path.join(DATA_DIR, 'db.json');
+function allowLocalStore() {
+  if (process.env.NODE_ENV === 'production' || (process.env.VERCEL && !process.env.VERCEL_DEV) || process.env.ALLOW_LOCAL_DB !== 'true') {
+    throw new AppError('CONFIGURATION', 503, undefined, false);
+  }
+}
 
 let pool = null;
 
@@ -21,15 +24,18 @@ function getPool() {
 
   pool = new Pool({
     connectionString: connStr,
-    ssl: connStr.includes('localhost') ? false : { rejectUnauthorized: false },
-    max: 10,
-    idleTimeoutMillis: 30000,
+    // pg honors sslmode/CA parameters in the connection URL; never disable verification here.
+    max: 3,
+    connectionTimeoutMillis: 4000,
+    statement_timeout: 5000,
+    idleTimeoutMillis: 10000,
+    allowExitOnIdle: true,
   });
   return pool;
 }
 
 function initLocalStore() {
-  try {
+  allowLocalStore();
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
@@ -43,9 +49,6 @@ function initLocalStore() {
       };
       fs.writeFileSync(LOCAL_DB_FILE, JSON.stringify(initial, null, 2), 'utf-8');
     }
-  } catch (err) {
-    console.warn('[Local Store Warning]: Could not initialize storage directory:', err.message);
-  }
 }
 
 function readLocalStore() {
@@ -54,17 +57,13 @@ function readLocalStore() {
     const raw = fs.readFileSync(LOCAL_DB_FILE, 'utf-8');
     return JSON.parse(raw);
   } catch {
-    return { users: [], conversations: [], messages: [], user_memory: [], uploaded_files: [] };
+    throw new AppError('STORAGE_UNAVAILABLE', 503);
   }
 }
 
 function writeLocalStore(data) {
   initLocalStore();
-  try {
-    fs.writeFileSync(LOCAL_DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('[Local Store Warning]: Could not write storage file:', err.message);
-  }
+  fs.writeFileSync(LOCAL_DB_FILE, JSON.stringify(data, null, 2), 'utf-8');
 }
 
 /**
@@ -132,13 +131,17 @@ export async function initDb() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS rate_limits (bucket TEXT PRIMARY KEY, count INT NOT NULL, expires_at TIMESTAMPTZ NOT NULL);
+      CREATE TABLE IF NOT EXISTS chat_requests (
+        conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        request_id VARCHAR(64) NOT NULL, status TEXT NOT NULL, reply TEXT, model TEXT,
+        updated_at TIMESTAMPTZ DEFAULT NOW(), PRIMARY KEY(conversation_id, request_id)
+      );
       CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at ASC);
       CREATE INDEX IF NOT EXISTS idx_memory_user ON user_memory(user_id);
       CREATE INDEX IF NOT EXISTS idx_files_user ON uploaded_files(user_id);
     `);
-  } catch (err) {
-    console.warn('[DB Init] Postgres init error (fallback to local if offline):', err.message);
   } finally {
     client.release();
   }
@@ -346,6 +349,7 @@ export const db = {
       return true;
     }
     const store = readLocalStore();
+    if (!store.conversations.some(c => c.id === id && c.user_id === userId)) return false;
     store.conversations = store.conversations.filter((c) => !(c.id === id && c.user_id === userId));
     store.messages = store.messages.filter((m) => m.conversation_id !== id);
     writeLocalStore(store);
@@ -452,6 +456,18 @@ export const db = {
     return true;
   },
 
+  // Associate only the current user's uploads; guest context remains browser-local.
+  async attachFiles(ids, conversationId, userId) {
+    const p = getPool();
+    if (p) {
+      await p.query('UPDATE uploaded_files SET conversation_id=$1 WHERE id=ANY($2::varchar[]) AND user_id=$3 AND (conversation_id IS NULL OR conversation_id=$1)',[conversationId,ids,userId]);
+      return;
+    }
+    const store = readLocalStore();
+    for (const file of store.uploaded_files) if (ids.includes(file.id) && file.user_id===userId && (!file.conversation_id || file.conversation_id===conversationId)) file.conversation_id=conversationId;
+    writeLocalStore(store);
+  },
+
   // UPLOADED FILES
   async createUploadedFile({ id, user_id, conversation_id = null, file_name, file_type, file_size, storage_url, extracted_text = '' }) {
     const now = new Date().toISOString();
@@ -496,3 +512,75 @@ export const db = {
     return true;
   },
 };
+
+// The schema is migrated explicitly with npm run db:migrate, not at cold starts.
+export async function consumeRateLimit(bucket, limit) {
+  const p = getPool();
+  if (!p) { allowLocalStore(); return true; } // development only; no fake production limiter
+  const result = await p.query(`INSERT INTO rate_limits(bucket,count,expires_at)
+    VALUES ($1,1,NOW()+INTERVAL '1 minute') ON CONFLICT(bucket) DO UPDATE
+    SET count=CASE WHEN rate_limits.expires_at <= NOW() THEN 1 ELSE rate_limits.count+1 END,
+        expires_at=CASE WHEN rate_limits.expires_at <= NOW() THEN NOW()+INTERVAL '1 minute' ELSE rate_limits.expires_at END
+    RETURNING count`, [bucket]);
+  return result.rows[0].count <= limit;
+}
+export async function claimChatRequest(conversationId, requestId) {
+  const p = getPool();
+  if (!p) {
+    const store=readLocalStore();store.chat_requests ||= [];
+    const existing=store.chat_requests.find(r=>r.conversationId===conversationId && r.requestId===requestId);
+    if (existing && (existing.status==='complete' || (existing.status==='pending' && Date.now()-existing.updatedAt < 120000))) return existing;
+    const record={conversationId,requestId,status:'pending',updatedAt:Date.now()};
+    if(existing)Object.assign(existing,record);else store.chat_requests.push(record);
+    writeLocalStore(store);return {status:'claimed'};
+  }
+  const claim = await p.query(`INSERT INTO chat_requests(conversation_id,request_id,status) VALUES($1,$2,'pending')
+    ON CONFLICT(conversation_id,request_id) DO UPDATE SET status='pending', updated_at=NOW()
+    WHERE chat_requests.status='failed' OR (chat_requests.status='pending' AND chat_requests.updated_at < NOW()-INTERVAL '2 minutes')
+    RETURNING status`, [conversationId, requestId]);
+  if (claim.rowCount) return { status: 'claimed' };
+  const existing = await p.query('SELECT status,reply,model FROM chat_requests WHERE conversation_id=$1 AND request_id=$2', [conversationId, requestId]);
+  return existing.rows[0];
+}
+export async function failChatRequest(conversationId, requestId) {
+  const p = getPool();
+  if (p) await p.query("UPDATE chat_requests SET status='failed',updated_at=NOW() WHERE conversation_id=$1 AND request_id=$2 AND status='pending'", [conversationId, requestId]);
+  else {
+    const store=readLocalStore();
+    const request=store.chat_requests?.find(r=>r.conversationId===conversationId && r.requestId===requestId);
+    if(request?.status==='pending')request.status='failed';
+    writeLocalStore(store);
+  }
+}
+export function chatMessageId(conversationId, requestId, suffix) {
+  return 'msg_' + crypto.createHash('sha256').update(`${conversationId}:${requestId}`).digest('hex').slice(0,40) + '_' + suffix;
+}
+export async function saveChatTurn({ conversationId, requestId, userId, message, reply, model, metadata, assistantMetadata }) {
+  const p = getPool();
+  if (!p) {
+    allowLocalStore();
+    const store = readLocalStore();
+    if (!store.conversations.some(c => c.id === conversationId && c.user_id === userId)) throw new AppError('NOT_FOUND',404);
+    if (store.messages.some(m => m.id === chatMessageId(conversationId,requestId,'b'))) return;
+    const now = new Date().toISOString();
+    store.messages.push({id: chatMessageId(conversationId,requestId,'u'),conversation_id:conversationId,role:'user',content:message,metadata,created_at:now},
+      {id:chatMessageId(conversationId,requestId,'b'),conversation_id:conversationId,role:'model',content:reply,model,metadata:assistantMetadata,created_at:now});
+    store.conversations.find(c => c.id === conversationId).updated_at = now;
+    const request=store.chat_requests?.find(r=>r.conversationId===conversationId && r.requestId===requestId);
+    if(request)Object.assign(request,{status:'complete',reply,model});
+    writeLocalStore(store);
+    return;
+  }
+  const client = await p.connect();
+  try {
+    await client.query('BEGIN');
+    const owned = await client.query('SELECT id FROM conversations WHERE id=$1 AND user_id=$2 FOR UPDATE',[conversationId,userId]);
+    if (!owned.rowCount) throw new AppError('NOT_FOUND',404);
+    await client.query(`INSERT INTO messages(id,conversation_id,role,content,model,metadata,created_at) VALUES
+      ($1,$2,'user',$3,NULL,$6,NOW()),($4,$2,'model',$5,$7,$8,NOW()+INTERVAL '1 microsecond') ON CONFLICT(id) DO NOTHING`,
+      [chatMessageId(conversationId,requestId,'u'),conversationId,message,chatMessageId(conversationId,requestId,'b'),reply,metadata ? JSON.stringify(metadata) : null,model,assistantMetadata ? JSON.stringify(assistantMetadata) : null]);
+    await client.query('UPDATE conversations SET updated_at=NOW() WHERE id=$1',[conversationId]);
+    await client.query("UPDATE chat_requests SET status='complete',reply=$3,model=$4,updated_at=NOW() WHERE conversation_id=$1 AND request_id=$2",[conversationId,requestId,reply,model]);
+    await client.query('COMMIT');
+  } catch(error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+}

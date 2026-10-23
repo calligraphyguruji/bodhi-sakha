@@ -12,7 +12,7 @@ const MarkdownContent = lazy(() => import('./MarkdownContent'));
  * - Deep Thinking reasoning badge indicators
  * - Text-to-speech speaker controls
  */
-function ChatMessage({ message, isSpeaking = false, onToggleSpeak }) {
+function ChatMessage({ message, isSpeaking = false, onToggleSpeak, onRetry }) {
   const isUser = message.sender === 'user' || message.role === 'user';
   const textContent = message.text || message.content || '';
   const attachments = message.attachments || [];
@@ -88,6 +88,13 @@ function ChatMessage({ message, isSpeaking = false, onToggleSpeak }) {
             </Suspense>
           )}
         </div>
+
+        {message.error && (
+          <div className="chat-error" role="alert">
+            <p>{message.error}</p>
+            {onRetry && <button type="button" className="primary-action-btn compact" onClick={onRetry}>Retry</button>}
+          </div>
+        )}
 
         {/* Audio Speaker Playback Control */}
         {onToggleSpeak && textContent && (

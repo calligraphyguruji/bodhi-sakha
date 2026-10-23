@@ -1,3 +1,4 @@
+import { logFailure, sendError, AppError } from '../../lib/server/errors.js';
 import { extractAuthUser } from './lib/auth.js';
 import { db } from './lib/db.js';
 import { writeCorsHeaders } from './lib/cors.js';
@@ -18,7 +19,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized. Please log in.' });
   }
 
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const url = new URL(req.url, 'http://api.internal');
   const pathname = url.pathname.replace(/\/+$/, '');
   const idMatch = pathname.match(/\/api\/conversations\/([^/?]+)/);
   const conversationId = idMatch ? idMatch[1] : url.searchParams.get('id');
@@ -30,6 +31,8 @@ export default async function handler(req, res) {
   body = body || {};
 
   try {
+    if (body.title !== undefined && (typeof body.title !== 'string' || body.title.length > 255)) throw new AppError('INVALID_REQUEST',400,'Please use a shorter conversation title.',false);
+    if (['pinned','archived'].some(k => body[k] !== undefined && typeof body[k] !== 'boolean')) throw new AppError('INVALID_REQUEST',400,'Invalid conversation settings.',false);
     // 1. LIST CONVERSATIONS (with optional search)
     if (req.method === 'GET' && !conversationId) {
       const search = url.searchParams.get('search') || '';
@@ -50,7 +53,7 @@ export default async function handler(req, res) {
 
     // 3. CREATE CONVERSATION
     if (req.method === 'POST' && !conversationId) {
-      const newId = body.id || 'conv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      const newId = 'conv_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
       const title = body.title?.trim() || 'New Chat';
       const conv = await db.createConversation({ id: newId, user_id: user.id, title });
       return res.status(201).json({ conversation: conv });
@@ -74,7 +77,8 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method Not Allowed' });
   } catch (err) {
-    console.error('[Conversations API Error]:', err);
+    if (err instanceof AppError) return sendError(res, err);
+    logFailure('conversations', err);
     return res.status(500).json({ error: 'Internal server error processing conversations' });
   }
 }

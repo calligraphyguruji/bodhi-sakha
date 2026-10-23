@@ -6,7 +6,7 @@ import Sidebar from './Sidebar';
 import AuthModal from './AuthModal';
 import MemoryModal from './MemoryModal';
 import SettingsModal from './SettingsModal';
-import { getLocalBotResponse } from '../utils/chatbotLogic';
+import { readChatResponse, friendlyChatError } from '../services/chatResponse';
 import { speakText, stopSpeech } from '../utils/speechUtils';
 import { useAuth } from '../context/useAuth';
 import { AIService } from '../services/aiService';
@@ -19,7 +19,7 @@ const SUGGESTIONS = [
   'Help me plan a full-stack project',
 ];
 
-function Chatbot() {
+function ChatbotSession() {
   const { user } = useAuth();
 
   // App Theme: 'light' or 'dark'
@@ -56,7 +56,8 @@ function Chatbot() {
   const [speakingMessageId, setSpeakingMessageId] = useState(null);
 
   const messagesEndRef = useRef(null);
-  const localTimerRef = useRef(null);
+  const busyRef = useRef(false);
+  const requestSequence = useRef(0);
   const abortControllerRef = useRef(null);
 
   // Theme synchronization
@@ -78,7 +79,9 @@ function Chatbot() {
   useEffect(() => {
     return () => {
       stopSpeech();
-      if (localTimerRef.current) clearTimeout(localTimerRef.current);
+      // Invalidate in-flight callbacks when this chat session unmounts.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      requestSequence.current++;
       if (abortControllerRef.current) abortControllerRef.current.abort();
     };
   }, []);
@@ -104,13 +107,24 @@ function Chatbot() {
     return () => clearTimeout(timer);
   }, [loadConversations, searchQuery]);
 
+  const cancelPending = () => {
+    requestSequence.current++;
+    abortControllerRef.current?.abort();
+    busyRef.current = false;
+    setIsTyping(false);
+    setStatusMessage('');
+  };
+
   // Select conversation and load its messages
   const handleSelectConversation = async (convId) => {
     if (!convId || convId === activeConversationId) return;
+    cancelPending();
+    const sequence = requestSequence.current;
     setActiveConversationId(convId);
     setSidebarOpen(false); // Close drawer on mobile
     try {
       const data = await AIService.getConversation(convId);
+      if (sequence !== requestSequence.current) return;
       if (data.messages && data.messages.length > 0) {
         setMessages(
           data.messages.map((m) => ({
@@ -119,6 +133,7 @@ function Chatbot() {
             text: m.content,
             model: m.model,
             imageUrl: m.metadata?.imageUrl,
+            attachments: m.metadata?.attachments,
           }))
         );
       } else {
@@ -137,6 +152,7 @@ function Chatbot() {
 
   // New Chat
   const handleNewChat = async () => {
+    cancelPending();
     setActiveConversationId(null);
     setMessages([
       {
@@ -201,183 +217,64 @@ function Chatbot() {
   };
 
   // File Upload helper
-  const handleFileUpload = async ({ fileName, fileType, fileData }) => {
+  const handleFileUpload = async ({ fileName, fileType, fileData, file }) => {
     return AIService.uploadFile({
       fileName,
       fileType,
       fileData,
+      file,
       conversationId: activeConversationId || null,
     });
   };
 
-  // Send Message handler
-  const handleSendMessage = async (userText, attachments = []) => {
+  // A retry reuses the user turn, bot slot, conversation and request ID.
+  const handleSendMessage = async (userText, attachments = [], retry = null) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const sequence = ++requestSequence.current;
     stopSpeech();
     setSpeakingMessageId(null);
-
-    const userMessage = {
-      id: Date.now(),
-      sender: 'user',
-      text: userText,
-      attachments,
-    };
-
-    const nextHistory = [...messages, userMessage];
-    setMessages(nextHistory);
+    const requestId = retry?.requestId || crypto.randomUUID();
+    const botId = retry?.botId || `bot_${requestId}`;
+    const history = retry?.history || messages.filter(m => !m.error && !m.partial).map(m => ({sender:m.sender,text:m.text}));
+    const actualMessage = userText.trim() || 'Please analyze the attached documents.';
+    const snapshot = {requestId,botId,history,userText,attachments,reasoningMode:retry?.reasoningMode ?? reasoningMode,conversationId:retry?.conversationId || activeConversationId};
+    let currentConvId = snapshot.conversationId;
+    if (retry) setMessages(prev => prev.map(m => m.id === botId ? {...m,text:'',error:null,partial:false} : m));
+    else setMessages(prev => [...prev,{id:`user_${requestId}`,sender:'user',text:actualMessage,attachments},{id:botId,sender:'bot',text:'',reasoningMode:snapshot.reasoningMode}]);
     setIsTyping(true);
-    setStatusMessage(reasoningMode ? 'Thinking deeply through the problem...' : 'Thinking...');
-
-    // Auto-create persistent conversation on first turn if user is logged in
-    let currentConvId = activeConversationId;
-    if (user && !currentConvId) {
-      try {
-        const titleSnippet = userText.slice(0, 36) + (userText.length > 36 ? '...' : '');
-        const createdConv = await AIService.createConversation(titleSnippet || 'New Chat');
-        currentConvId = createdConv.id;
-        setActiveConversationId(createdConv.id);
-        loadConversations();
-      } catch (e) {
-        console.warn('Could not auto-create conversation:', e);
-      }
-    }
-
-    // Local heuristic check for instant answers if no files attached
-    if (attachments.length === 0) {
-      const localResponse = getLocalBotResponse(userText);
-      if (localResponse !== null) {
-        localTimerRef.current = setTimeout(() => {
-          const botMessage = {
-            id: Date.now() + 1,
-            sender: 'bot',
-            text: localResponse,
-          };
-          setMessages((prev) => [...prev, botMessage]);
-          setIsTyping(false);
-          setStatusMessage('');
-        }, 600);
-        return;
-      }
-    }
-
-    // Prepare combined file context text if documents were attached
-    const fileContextText = attachments
-      .map((a) => (a.extractedText || a.fileName ? `[File: ${a.fileName}]\n${a.extractedText || ''}` : ''))
-      .filter(Boolean)
-      .join('\n\n');
-
+    setStatusMessage(snapshot.reasoningMode ? 'Thinking deeply through the problem...' : 'Thinking...');
     const controller = new AbortController();
     abortControllerRef.current = controller;
-    const timeoutId = setTimeout(() => controller.abort(), 90000);
-
+    const timer = setTimeout(() => controller.abort(),58000);
     try {
-      const response = await AIService.sendMessage({
-        message: userText,
-        history: nextHistory,
-        conversationId: currentConvId,
-        reasoningMode,
-        fileContext: fileContextText,
-        signal: controller.signal,
-      });
-
-      const contentType = response.headers.get('content-type') || '';
-
-      if (!response.ok) {
-        const data = await response.json().catch(() => null);
-        console.error('[Chat API Error Detail]:', {
-          status: response.status,
-          statusText: response.statusText,
-          errorCode: data?.error?.code,
-          errorMessage: data?.error?.message,
-          errorDetails: data?.error?.details,
-          fullData: data,
-        });
-
-        const serverErrorMessage =
-          data?.error?.message ||
-          data?.reply ||
-          (typeof data?.error === 'string' ? data.error : null) ||
-          "Sorry, I couldn't generate a response right now. Please try again.";
-
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            sender: 'bot',
-            text: serverErrorMessage,
-          },
-        ]);
-        return;
+      if (user && !currentConvId) {
+        const conv = await AIService.createConversation(actualMessage.slice(0,36));
+        if (sequence !== requestSequence.current) return;
+        currentConvId = conv.id;
+        setActiveConversationId(conv.id);
       }
-
-      if (contentType.includes('text/plain') && response.body) {
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        const botMessageId = Date.now() + 1;
-        let streamedText = '';
-
+      const contextAttachments = attachments.length ? attachments : [...messages].reverse().find(m => m.attachments?.length)?.attachments || [];
+      const fileContext = contextAttachments.map(a => `[File: ${a.fileName}]\n${a.extractedText || ''}`).join('\n\n').slice(0,15000);
+      const response = await AIService.sendMessage({message:actualMessage,history,conversationId:currentConvId,requestId,attachmentIds:attachments.map(a => a.id).filter(Boolean),reasoningMode:snapshot.reasoningMode,fileContext,signal:controller.signal});
+      const result = await readChatResponse(response,text => {
+        if (sequence !== requestSequence.current) return;
+        setStatusMessage('');
+        setMessages(prev => prev.map(m => m.id === botId ? {...m,text} : m));
+      });
+      if (result?.imageUrl && sequence === requestSequence.current) setMessages(prev => prev.map(m => m.id === botId ? {...m,imageUrl:result.imageUrl} : m));
+    } catch (error) {
+      if (sequence !== requestSequence.current) return;
+      const safe = friendlyChatError(error);
+      setMessages(prev => prev.map(m => m.id === botId ? {...m,error:safe.message,partial:Boolean(m.text),retry:safe.retryable ? {...snapshot,conversationId:currentConvId} : null} : m));
+    } finally {
+      clearTimeout(timer);
+      if (sequence === requestSequence.current) {
+        busyRef.current = false;
         setIsTyping(false);
         setStatusMessage('');
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: botMessageId,
-            sender: 'bot',
-            text: '',
-            reasoningMode,
-          },
-        ]);
-
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          streamedText += decoder.decode(value, { stream: true });
-          setMessages((prev) =>
-            prev.map((m) => (m.id === botMessageId ? { ...m, text: streamedText } : m))
-          );
-        }
-
-        if (!streamedText.trim()) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === botMessageId
-                ? { ...m, text: 'I could not generate an answer for this prompt. Please try asking again.' }
-                : m
-            )
-          );
-        }
-      } else {
-        const data = await response.json().catch(() => null);
-        const botReply = data?.reply || data?.error?.message || 'I could not generate an answer for this prompt. Please try asking again.';
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now() + 1,
-            sender: 'bot',
-            text: botReply,
-            reasoningMode,
-          },
-        ]);
+        if (user) loadConversations();
       }
-    } catch (err) {
-      console.error('Chat API error:', err);
-      const fallbackText =
-        err?.name === 'AbortError'
-          ? 'The response took longer than 90 seconds to generate. Please try asking a more specific question.'
-          : 'Unable to connect to the assistant server. Please check your network connection.';
-
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: Date.now() + 1,
-          sender: 'bot',
-          text: fallbackText,
-        },
-      ]);
-    } finally {
-      clearTimeout(timeoutId);
-      setIsTyping(false);
-      setStatusMessage('');
-      if (user) loadConversations();
     }
   };
 
@@ -486,6 +383,7 @@ function Chatbot() {
                 message={message}
                 isSpeaking={speakingMessageId === message.id}
                 onToggleSpeak={handleToggleSpeak}
+                onRetry={message.retry && !isTyping ? () => handleSendMessage(message.retry.userText, message.retry.attachments, message.retry) : null}
               />
             ))}
 
@@ -522,4 +420,7 @@ function Chatbot() {
   );
 }
 
-export default Chatbot;
+export default function Chatbot() {
+  const { user } = useAuth();
+  return <ChatbotSession key={user?.id || 'guest'} />;
+}

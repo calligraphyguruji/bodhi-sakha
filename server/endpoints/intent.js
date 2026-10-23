@@ -148,14 +148,14 @@ export function classifyIntent(message) {
   const isMultiTask = matchedTasks.length > 1;
 
   // 3. Determine Complexity Level (SIMPLE, MEDIUM, COMPLEX)
-  let complexity = COMPLEXITY_LEVELS.MEDIUM;
-  let maxTokens = 2048;
+  let complexity;
+  let maxTokens;
 
   // Simple patterns: full forms, simple definitions, single facts, math calculations
   const isSimplePattern =
-    /^(what\s+is\s+(the\s+)?full\s+form\s+of|full\s+form(\s+of)?|meaning\s+of|define|who\s+(created|invented|made)|when\s+was|where\s+is|\d+\s*[\+\-\*\/]\s*\d+)/i.test(query) ||
-    /^(what\s+is\s+([a-zA-Z0-9_\-\.\+]{1,25})\??)$/i.test(query) ||
-    /^[a-zA-Z0-9_\-\.\+]{1,20}\s+(full\s+form|meaning)\??$/i.test(query) ||
+    /^(what\s+is\s+(the\s+)?full\s+form\s+of|full\s+form(\s+of)?|meaning\s+of|define|who\s+(created|invented|made)|when\s+was|where\s+is|\d+\s*[+*/-]\s*\d+)/i.test(query) ||
+    /^(what\s+is\s+([a-zA-Z0-9_.+-]{1,25})\??)$/i.test(query) ||
+    /^[a-zA-Z0-9_.+-]{1,20}\s+(full\s+form|meaning)\??$/i.test(query) ||
     (query.split(/\s+/).length <= 4 && /^(what|who|when|where|which|how\s+much)\b/i.test(query));
 
   // Complex patterns: explicitly detailed requests, system design, architecture, complete implementations, formula sheets, multi-task (3+ tasks)

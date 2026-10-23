@@ -1,3 +1,4 @@
+import { logFailure, sendError, AppError } from '../../lib/server/errors.js';
 import { extractAuthUser } from './lib/auth.js';
 import { db } from './lib/db.js';
 import { writeCorsHeaders } from './lib/cors.js';
@@ -18,7 +19,7 @@ export default async function handler(req, res) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const url = new URL(req.url, 'http://api.internal');
   const pathname = url.pathname.replace(/\/+$/, '');
   const idMatch = pathname.match(/\/api\/memory\/([^/?]+)/);
   const memoryId = idMatch ? idMatch[1] : url.searchParams.get('id');
@@ -39,7 +40,7 @@ export default async function handler(req, res) {
     // 2. ADD / UPDATE A MEMORY
     if (req.method === 'POST') {
       const { memory_key, memory_value, importance = 1 } = body;
-      if (!memory_key || !memory_value) {
+      if (typeof memory_key !== 'string' || !memory_key.trim() || memory_key.length > 128 || typeof memory_value !== 'string' || !memory_value.trim() || memory_value.length > 2000 || !Number.isInteger(Number(importance)) || Number(importance) < 1 || Number(importance) > 3) {
         return res.status(400).json({ error: 'memory_key and memory_value are required' });
       }
       const memId = 'mem_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6);
@@ -69,7 +70,8 @@ export default async function handler(req, res) {
 
     return res.status(405).json({ error: 'Method Not Allowed' });
   } catch (err) {
-    console.error('[Memory API Error]:', err);
+    if (err instanceof AppError) return sendError(res, err);
+    logFailure('memory', err);
     return res.status(500).json({ error: 'Server error managing memory' });
   }
 }

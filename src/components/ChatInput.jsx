@@ -92,6 +92,11 @@ function ChatInput({
       }
 
       try {
+        if (file.size > 3 * 1024 * 1024) {
+          const uploaded = await onFileUpload({fileName:file.name,fileType:file.type,file});
+          setAttachments(prev => [...prev,uploaded]);
+          continue;
+        }
         const reader = new FileReader();
         reader.readAsDataURL(file);
         await new Promise((resolve, reject) => {

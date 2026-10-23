@@ -1,3 +1,5 @@
+import { logFailure } from '../../lib/server/errors.js';
+
 /**
  * Live Web Search Orchestrator
  * Performs real-time external searches with query sanitization,
@@ -80,7 +82,7 @@ export async function searchWeb(query, maxResults = 4) {
       }
     }
   } catch (err) {
-    console.warn('[Web Search Engine] Live fetch warning:', err?.message || err);
+    logFailure('search', err);
   }
 
   let contextText = '';

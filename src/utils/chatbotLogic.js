@@ -5,7 +5,7 @@
  * @param {string} userInput - The text sent by the user
  * @returns {string|null} - The local bot reply, or null if unrecognized
  */
-export function getLocalBotResponse(userInput) {
+export function getLocalBotResponse(userInput, timeZone) {
   const query = userInput.trim().toLowerCase();
 
   // 1. Bot identity check (English, Hinglish & Hindi Devanagari)
@@ -64,6 +64,7 @@ export function getLocalBotResponse(userInput) {
   if (!hasLocationModifier && isDateIntent) {
     const today = new Date();
     const formattedDate = today.toLocaleDateString('en-US', {
+      ...(timeZone ? { timeZone } : {}),
       weekday: 'long',
       month: 'long',
       day: 'numeric',
@@ -85,6 +86,7 @@ export function getLocalBotResponse(userInput) {
   if (isTimeIntent) {
     const now = new Date();
     const formattedTime = now.toLocaleTimeString('en-US', {
+      ...(timeZone ? { timeZone } : {}),
       hour: 'numeric',
       minute: '2-digit',
       hour12: true,

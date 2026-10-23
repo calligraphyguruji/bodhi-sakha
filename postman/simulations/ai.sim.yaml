@@ -1,0 +1,7 @@
+simulation: bodhi-ai
+routing: path
+mocks:
+  - routeKey: gemini
+    path: ../mocks/providers/default.cjs
+  - routeKey: groq
+    path: ../mocks/providers/groq.cjs

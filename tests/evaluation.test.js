@@ -63,26 +63,14 @@ async function runTests() {
   const t10_intent = classifyIntent('Compare classical atomic model with latest 2026 quantum research');
   assert(t10_intent.needsKnowledgeBase && t10_intent.needsCurrentInfo, 'TEST 10: Combined RAG + Web Search intent');
 
-  // TEST 11: Empty/invalid request
-  let res11Status = 0;
-  let res11Data = null;
-  await handler({ method: 'POST', body: { message: '' } }, {
-    setHeader: () => {},
-    status: (s) => { res11Status = s; return { json: (d) => { res11Data = d; } }; }
-  });
-  assert(res11Status === 400 && res11Data.error === 'Message is required', 'TEST 11: Empty request rejected with HTTP 400');
-
-  // TEST 12: Simulated Gemini API failure / missing key handling
-  let res12Status = 0;
-  let res12Data = null;
-  const origKey = process.env.GEMINI_API_KEY;
-  process.env.GEMINI_API_KEY = 'invalid_mock_key';
-  await handler({ method: 'POST', body: { message: 'Tell me about entropy' } }, {
-    setHeader: () => {},
-    status: (s) => { res12Status = s; return { json: (d) => { res12Data = d; } }; }
-  });
-  assert(res12Status >= 400 && res12Data.reply && !res12Data.reply.startsWith("Sorry, I can't help"), 'TEST 12: Invalid API key produces diagnostic error');
-  process.env.GEMINI_API_KEY = origKey;
+  // Tests 11-12: invalid request and missing configuration never call a live provider.
+  let status = 0; let data;
+  const response = {setHeader(){},status(s){status=s;return this;},json(d){data=d;return this;}};
+  await handler({method:'POST',body:{message:''}},response);
+  assert(status===400 && data.error.code==='INVALID_REQUEST','TEST 11: Empty request rejected');
+  delete process.env.GEMINI_API_KEY; delete process.env.GROQ_API_KEY;
+  await handler({method:'POST',body:{message:'Explain entropy'}},response);
+  assert(status===503 && data.error.code==='CONFIGURATION','TEST 12: Missing configuration is friendly');
 
   // TEST 13: Simulated RAG failure (graceful empty/zero results)
   const t13 = retrieveKnowledge('xyz completely unrelated gibberish 999');
@@ -99,89 +87,12 @@ async function runTests() {
   // TEST 16: Response containing mathematical formulas in LaTeX syntax
   assert(t7.contextText.includes(String.raw`$E = h\nu`) && t7.contextText.includes(String.raw`\lambda`), 'TEST 16: LaTeX math syntax present in retrieval and generation context');
 
-  // TEST 17: Streaming mode support (verifies text/plain chunked streaming protocol)
-  let streamHeaders = null;
-  let streamChunks = [];
-  let streamEnded = false;
-  const prevEnvKey = process.env.GEMINI_API_KEY;
-  process.env.GEMINI_API_KEY = 'mock_key_for_test';
-  await handler(
-    {
-      method: 'POST',
-      body: { message: 'weather', stream: true },
-    },
-    {
-      setHeader: () => {},
-      writeHead: (status, headers) => {
-        streamHeaders = { status, ...headers };
-      },
-      write: (chunk) => {
-        streamChunks.push(chunk);
-      },
-      end: () => {
-        streamEnded = true;
-      },
-      status: () => ({ json: () => {} }),
-    }
-  );
-  process.env.GEMINI_API_KEY = prevEnvKey;
-  assert(
-    streamHeaders &&
-      streamHeaders.status === 200 &&
-      streamHeaders['Content-Type'].includes('text/plain') &&
-      streamChunks.length > 0 &&
-      streamEnded,
-    'TEST 17: Streaming mode yields chunked text/plain response'
-  );
-
-  // TEST 18: CORS allows configured origins and rejects unknown browser origins
-  const prevClientOrigin = process.env.CLIENT_ORIGIN;
-  process.env.CLIENT_ORIGIN = 'https://basic-chatbot-kappa.vercel.app';
-
-  let allowedCorsStatus = 0;
-  let allowedCorsHeaders = {};
-  await handler(
-    {
-      method: 'OPTIONS',
-      headers: { origin: 'https://basic-chatbot-kappa.vercel.app' },
-    },
-    {
-      setHeader: (key, value) => {
-        allowedCorsHeaders[key] = value;
-      },
-      status: (s) => {
-        allowedCorsStatus = s;
-        return { end: () => {} };
-      },
-    }
-  );
-
-  let blockedCorsStatus = 0;
-  await handler(
-    {
-      method: 'OPTIONS',
-      headers: { origin: 'https://evil.example' },
-    },
-    {
-      setHeader: () => {},
-      status: (s) => {
-        blockedCorsStatus = s;
-        return { end: () => {} };
-      },
-    }
-  );
-
-  if (prevClientOrigin === undefined) {
-    delete process.env.CLIENT_ORIGIN;
-  } else {
-    process.env.CLIENT_ORIGIN = prevClientOrigin;
-  }
-  assert(
-    allowedCorsStatus === 200 &&
-      allowedCorsHeaders['Access-Control-Allow-Origin'] === 'https://basic-chatbot-kappa.vercel.app' &&
-      blockedCorsStatus === 403,
-    'TEST 18: CORS only permits configured browser origins'
-  );
+  // Tests 17-18: same-origin policy and local replies use no provider network.
+  let streamed='';
+  await handler({method:'POST',body:{message:'weather',stream:true}},{setHeader(){},write(c){streamed+=c;},end(){},status(){return this;},json(){}});
+  assert(streamed.includes('Which city'),'TEST 17: Legacy text stream preserved');
+  const {writeCorsHeaders}=await import('../server/endpoints/lib/cors.js');
+  assert(writeCorsHeaders({headers:{origin:'https://app.example',host:'app.example'}},{setHeader(){}}) && !writeCorsHeaders({headers:{origin:'https://evil.example',host:'app.example'}},{setHeader(){}}),'TEST 18: Same-origin protection');
 
   console.log(`\n========================================`);
   console.log(`Evaluation Completed: ${passed}/${total} tests passed.`);

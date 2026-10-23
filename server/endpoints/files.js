@@ -1,18 +1,13 @@
-import { extractAuthUser } from './lib/auth.js';
-import { db } from './lib/db.js';
-import { writeCorsHeaders } from './lib/cors.js';
+import crypto from 'node:crypto';
+import { get, del } from '@vercel/blob';
+import { handleUpload } from '@vercel/blob/client';
 import { extractText } from 'unpdf';
 import mammoth from 'mammoth';
-
-const MAX_FILE_SIZE = 15 * 1024 * 1024; // 15MB limit
-
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '20mb',
-    },
-  },
-};
+import { extractAuthUser } from './lib/auth.js';
+import { db } from './lib/db.js';
+import { AppError, sendError, logFailure } from '../../lib/server/errors.js';
+import { invalid } from '../../lib/server/validation.js';
+import { MAX_FILE_SIZE, validateFile, createUploadTicket, verifyUploadTicket } from '../../lib/server/uploads.js';
 
 /**
  * Extracts plain text from various file formats
@@ -43,8 +38,8 @@ async function parseFileContent(buffer, mimeType, filename) {
       const { text } = await extractText(new Uint8Array(buffer));
       return (Array.isArray(text) ? text.join('\n') : (text || '')).trim();
     } catch (e) {
-      console.warn('PDF parse error:', e.message);
-      return '';
+      logFailure('pdf.extract', e);
+      throw new AppError('INVALID_FILE',422,'Unable to read this PDF. Please try another file.',false);
     }
   }
 
@@ -57,8 +52,8 @@ async function parseFileContent(buffer, mimeType, filename) {
       const result = await mammoth.extractRawText({ buffer });
       return result.value || '';
     } catch (e) {
-      console.warn('DOCX parse error:', e.message);
-      return '';
+      logFailure('docx.extract', e);
+      throw new AppError('INVALID_FILE',422,'Unable to read this document. Please try another file.',false);
     }
   }
 
@@ -71,111 +66,70 @@ async function parseFileContent(buffer, mimeType, filename) {
 }
 
 export default async function handler(req, res) {
-  const isAllowedOrigin = writeCorsHeaders(req, res);
-
-  if (req.method === 'OPTIONS') {
-    return res.status(isAllowedOrigin ? 200 : 403).end();
-  }
-
-  if (!isAllowedOrigin) {
-    return res.status(403).json({ error: 'Origin not allowed' });
-  }
-
   const user = extractAuthUser(req);
-
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const pathname = url.pathname.replace(/\/+$/, '');
-  const idMatch = pathname.match(/\/api\/files\/([^/?]+)/);
-  const fileId = idMatch ? idMatch[1] : url.searchParams.get('id');
-
-  // DELETE FILE
-  if (req.method === 'DELETE' && fileId) {
-    if (!user) {
-      return res.status(401).json({ error: 'Please sign in to delete files.' });
-    }
-    await db.deleteFile(fileId, user.id);
-    return res.status(200).json({ success: true });
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
-  }
-
+  const url = new URL(req.url, 'http://api.internal');
+  const action = url.searchParams.get('action');
   try {
-    let body = req.body;
-    if (typeof body === 'string') {
-      try { body = JSON.parse(body); } catch { body = {}; }
-    }
-    const { fileName, fileType, fileData, conversationId } = body || {};
-
-    if (!fileName || !fileData) {
-      return res.status(400).json({ error: 'Missing fileName or fileData (base64 string).' });
-    }
-
-    // Base64 decoding
-    const base64Content = fileData.replace(/^data:[^;]+;base64,/, '');
-    const buffer = Buffer.from(base64Content, 'base64');
-
-    if (buffer.length > MAX_FILE_SIZE) {
-      return res.status(413).json({ error: 'File exceeds maximum upload limit of 15MB.' });
-    }
-
-    const mime = fileType || 'application/octet-stream';
-    let extractedText = '';
-    try {
-      extractedText = await parseFileContent(buffer, mime, fileName);
-    } catch (parseErr) {
-      console.error('[Document Extraction Error]:', parseErr);
-      return res.status(422).json({
-        error: 'Failed to extract text from document.',
-        details: parseErr.message,
-      });
-    }
-
-    const newFileId = 'file_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
-    const storageUrl = mime.startsWith('image/')
-      ? `data:${mime};base64,${base64Content}`
-      : null;
-
-    if (!user) {
-      // Unauthenticated / Guest upload: return parsed text directly for in-memory session
-      return res.status(200).json({
-        file: {
-          id: newFileId,
-          fileName,
-          fileType: mime,
-          fileSize: buffer.length,
-          hasText: Boolean(extractedText),
-          storageUrl,
-          extractedText: (extractedText || '').slice(0, 100000),
+    const body = req.body || {};
+    if (req.method === 'POST' && body.type?.startsWith('blob.')) {
+      const result = await handleUpload({ request: req, body,
+        onBeforeGenerateToken: async (pathname, clientPayload) => {
+          const ticket = verifyUploadTicket(clientPayload, user?.id);
+          if (pathname !== ticket.pathname) throw invalid('Invalid upload path.');
+          return { maximumSizeInBytes: ticket.fileSize, addRandomSuffix: false, allowOverwrite: false,
+            validUntil: ticket.expires, ...(ticket.fileType ? {allowedContentTypes:[ticket.fileType]} : {}) };
         },
       });
+      return res.status(200).json(result);
     }
-
-    const saved = await db.createUploadedFile({
-      id: newFileId,
-      user_id: user.id,
-      conversation_id: conversationId || null,
-      file_name: fileName,
-      file_type: mime,
-      file_size: buffer.length,
-      storage_url: storageUrl,
-      extracted_text: (extractedText || '').slice(0, 100000), // Cap for context safety
-    });
-
-    return res.status(201).json({
-      file: {
-        id: saved.id,
-        fileName: saved.file_name,
-        fileType: saved.file_type,
-        fileSize: saved.file_size,
-        hasText: Boolean(saved.extracted_text),
-        storageUrl: saved.storage_url,
-        extractedText: saved.extracted_text,
-      },
-    });
-  } catch (err) {
-    console.error('[File Upload Error]:', err);
-    return res.status(500).json({ error: 'File upload failed. Please try again.' });
-  }
+    if (req.method === 'DELETE') {
+      if (!user) throw new AppError('UNAUTHORIZED',401,'Please sign in to delete files.',false);
+      const id = url.pathname.split('/')[3] || url.searchParams.get('id');
+      if (!id) throw invalid('Please specify a file.');
+      await db.deleteFile(id,user.id);
+      return res.status(200).json({success:true});
+    }
+    if (req.method !== 'POST') throw new AppError('METHOD_NOT_ALLOWED',405,'Please send a POST request.',false);
+    let { fileName, fileType = '', conversationId, fileData } = body;
+    let buffer;
+    let temporaryPath;
+    if (action === 'complete') {
+      const ticket = verifyUploadTicket(body.ticket,user?.id);
+      ({fileName,fileType,conversationId} = ticket);
+      temporaryPath = ticket.pathname;
+      const blob = await get(temporaryPath,{access:'private',useCache:false,abortSignal:AbortSignal.timeout(10000)});
+      if (!blob || blob.statusCode !== 200) throw invalid('Upload not found. Please attach the file again.');
+      const chunks=[]; let size=0;
+      for await (const chunk of blob.stream) {
+        size += chunk.length;
+        if (size > MAX_FILE_SIZE || size > ticket.fileSize) throw invalid('The uploaded file is too large.');
+        chunks.push(Buffer.from(chunk));
+      }
+      buffer = Buffer.concat(chunks);
+    } else {
+      validateFile(body);
+      if (conversationId && (!user || !await db.getConversation(conversationId,user.id))) throw new AppError('NOT_FOUND',404,'Conversation not found.',false);
+      if (action === 'prepare') {
+        if (!Number.isInteger(body.fileSize)) throw invalid('File size is required.');
+        const ticket = createUploadTicket({fileName,fileType,fileSize:body.fileSize,conversationId:conversationId || null,userId:user?.id || null});
+        return res.status(200).json({ticket,pathname:verifyUploadTicket(ticket,user?.id).pathname});
+      }
+      if (typeof fileData !== 'string' || fileData.length > 4200000) throw invalid('Please attach this file using direct upload.');
+      const base64 = fileData.replace(/^data:[^;]*;base64,/, '');
+      if (!/^[A-Za-z0-9+/]*={0,2}$/.test(base64) || !base64) throw invalid('Invalid file data.');
+      buffer = Buffer.from(base64,'base64');
+    }
+    validateFile({fileName,fileType,fileSize:buffer.length});
+    if (conversationId && (!user || !await db.getConversation(conversationId,user.id))) throw new AppError('NOT_FOUND',404,'Conversation not found.',false);
+    try {
+      const extractedText = (await parseFileContent(buffer,fileType,fileName)).slice(0,100000);
+      const id = 'file_'+crypto.randomUUID();
+      // Original documents were never retained. Keep extracted text and metadata only;
+      // avoid returning multi-MB image data URLs that exceed function response limits.
+      if (user) await db.createUploadedFile({id,user_id:user.id,conversation_id:conversationId || null,file_name:fileName,file_type:fileType,file_size:buffer.length,storage_url:null,extracted_text:extractedText});
+      return res.status(user ? 201 : 200).json({file:{id,fileName,fileType,fileSize:buffer.length,hasText:Boolean(extractedText),extractedText}});
+    } finally {
+      if (temporaryPath) await del(temporaryPath).catch(error => logFailure('blob.cleanup',error));
+    }
+  } catch(error) { logFailure('files',error); return sendError(res,error); }
 }

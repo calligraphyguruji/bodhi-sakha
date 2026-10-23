@@ -1,3 +1,4 @@
+import { logFailure, sendError, AppError } from '../../lib/server/errors.js';
 import crypto from 'crypto';
 import { db } from './lib/db.js';
 import { hashPassword, comparePassword, signToken, extractAuthUser } from './lib/auth.js';
@@ -16,7 +17,7 @@ export default async function handler(req, res) {
 
   // Parse path or action query parameter
   // Handles /api/auth?action=register or /api/auth/register
-  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const url = new URL(req.url, 'http://api.internal');
   const pathname = url.pathname.replace(/\/+$/, '');
   const actionParam = url.searchParams.get('action');
 
@@ -44,19 +45,20 @@ export default async function handler(req, res) {
     if (action === 'register' && req.method === 'POST') {
       const { name, email, password, confirmPassword } = body;
 
-      if (!name || !name.trim()) {
+      if (typeof name !== 'string' || !name.trim() || name.length > 255) {
         return res.status(400).json({ error: 'Name is required' });
       }
-      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      if (typeof email !== 'string' || email.length > 255 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
         return res.status(400).json({ error: 'Valid email address is required' });
       }
-      if (!password || password.length < 6) {
-        return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+      if (typeof password !== 'string' || password.length < 6 || Buffer.byteLength(password) > 72) {
+        return res.status(400).json({ error: 'Password must contain at least 6 characters and at most 72 UTF-8 bytes' });
       }
       if (confirmPassword && password !== confirmPassword) {
         return res.status(400).json({ error: 'Passwords do not match' });
       }
 
+      signToken({ configurationCheck: true });
       const existing = await db.findUserByEmail(email);
       if (existing) {
         return res.status(409).json({ error: 'An account with this email already exists' });
@@ -82,7 +84,7 @@ export default async function handler(req, res) {
     // 2. LOGIN
     if (action === 'login' && req.method === 'POST') {
       const { email, password } = body;
-      if (!email || !password) {
+      if (typeof email !== 'string' || typeof password !== 'string' || email.length > 255 || Buffer.byteLength(password) > 72) {
         return res.status(400).json({ error: 'Email and password are required' });
       }
 
@@ -123,10 +125,10 @@ export default async function handler(req, res) {
 
     return res.status(404).json({ error: `Unknown auth action: ${action}` });
   } catch (err) {
-    console.error('[Auth API Error]:', err);
+    if (err instanceof AppError) return sendError(res, err);
+    logFailure('auth', err);
     return res.status(500).json({
       error: 'Authentication service error. Please try again.',
-      details: err?.message || String(err),
     });
   }
 }

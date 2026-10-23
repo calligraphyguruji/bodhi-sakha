@@ -5,7 +5,7 @@ import reactRefresh from 'eslint-plugin-react-refresh'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', '.vercel', 'postman/mocks']),
   {
     files: ['src/**/*.{js,jsx}'],
     extends: [
@@ -19,7 +19,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['api/**/*.{js,cjs,mjs}', 'server/**/*.{js,cjs,mjs}', 'vite.config.js', 'eslint.config.js'],
+    files: ['api/**/*.{js,cjs,mjs}', 'server/**/*.{js,cjs,mjs}', 'lib/**/*.js', 'scripts/**/*.js', 'tests/**/*.{js,mjs}', 'vite.config.js', 'eslint.config.js'],
     extends: [js.configs.recommended],
     languageOptions: {
       globals: {

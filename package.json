@@ -5,28 +5,24 @@
   "author": "Mr. Aman Mishra",
   "type": "module",
   "scripts": {
-    "start": "node server/server.js",
-    "server": "node server/server.js",
+    "start": "vercel dev",
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "test": "node tests/evaluation.test.js && node tests/assistant.test.js",
-    "preview": "vite preview"
+    "test": "node --test tests/*.test.js",
+    "preview": "vite preview",
+    "test:browser": "node tests/browser.mjs",
+    "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate-db.js",
+    "dev:full": "vercel dev",
+    "db:import": "node --env-file-if-exists=.env.local scripts/import-local-data.js"
   },
   "dependencies": {
-    "@google/genai": "^2.27.0",
-    "@google/generative-ai": "^0.24.1",
-    "@neon/config": "^1.8.4",
-    "@neon/env": "^1.5.1",
     "@vercel/analytics": "^2.0.1",
+    "@vercel/blob": "2.8.0",
     "bcryptjs": "^3.0.3",
-    "cors": "^2.8.6",
-    "dotenv": "^18.0.5",
-    "express": "^5.2.1",
     "jsonwebtoken": "^9.0.3",
     "katex": "^0.19.0",
     "mammoth": "^1.13.0",
-    "multer": "^2.4.0",
     "pg": "^8.23.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
@@ -45,6 +41,13 @@
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.6",
     "globals": "^17.12.0",
-    "vite": "^8.3.0"
+    "playwright": "1.64.0",
+    "vercel": "62.5.0",
+    "vite": "^8.3.0",
+    "@neon/config": "^1.8.4",
+    "@neon/env": "^1.5.1"
+  },
+  "engines": {
+    "node": "24.x"
   }
 }

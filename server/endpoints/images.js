@@ -1,87 +1,31 @@
 import { extractAuthUser } from './lib/auth.js';
-import { writeCorsHeaders } from './lib/cors.js';
+import { AppError, sendError, logFailure } from '../../lib/server/errors.js';
+import { providerKey, invalid } from '../../lib/server/validation.js';
 
-function getApiKey() {
-  let key = process.env.IMAGE_API_KEY || process.env.GEMINI_API_KEY;
-  if (key) key = key.trim().replace(/^["']|["']$/g, '');
-  if (!key || key === 'YOUR_GEMINI_API_KEY' || key === 'your_api_key_here') return null;
-  return key;
-}
-
-export default async function handler(req, res) {
-  const isAllowedOrigin = writeCorsHeaders(req, res);
-
-  if (req.method === 'OPTIONS') {
-    return res.status(isAllowedOrigin ? 200 : 403).end();
-  }
-
-  if (!isAllowedOrigin) {
-    return res.status(403).json({ error: 'Origin not allowed' });
-  }
-
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method Not Allowed' });
-  }
-
-  const user = extractAuthUser(req);
-  if (!user) {
-    return res.status(401).json({ error: 'Please sign in to generate images.' });
-  }
-
-  let body = req.body;
-  if (typeof body === 'string') {
-    try { body = JSON.parse(body); } catch { body = {}; }
-  }
-  const { prompt } = body || {};
-
-  if (!prompt || !prompt.trim()) {
-    return res.status(400).json({ error: 'Image prompt is required' });
-  }
-
-  const apiKey = getApiKey();
-  if (!apiKey) {
-    return res.status(500).json({ error: 'AI image generation service is not configured.' });
-  }
-
+export async function generateImage(prompt) {
+  if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 4000) throw invalid('Please enter a shorter image prompt.');
+  const key = providerKey('IMAGE_API_KEY') || providerKey('GEMINI_API_KEY');
+  if (!key) throw new AppError('CONFIGURATION',503,undefined,false);
   try {
-    // 1. First attempt: Google Imagen / Gemini 2.0 Flash Image generation
-    // Use official generateImages or generative AI endpoint
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
-    const payload = {
-      instances: [{ prompt: prompt.trim() }],
-      parameters: { sampleCount: 1, aspectRatio: '1:1', outputOptions: { mimeType: 'image/jpeg' } },
-    };
-
-    const apiRes = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+    const model = process.env.IMAGE_MODEL || 'gemini-3.1-flash-image';
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method:'POST', headers:{'Content-Type':'application/json','x-goog-api-key':key},
+      body:JSON.stringify({contents:[{role:'user',parts:[{text:prompt.trim()}]}],generationConfig:{responseModalities:['TEXT','IMAGE']}}),
+      signal:AbortSignal.timeout(25000),
     });
-
-    if (apiRes.ok) {
-      const data = await apiRes.json();
-      const base64Bytes = data.predictions?.[0]?.bytesBase64Encoded;
-      if (base64Bytes) {
-        const imageUrl = `data:image/jpeg;base64,${base64Bytes}`;
-        return res.status(200).json({
-          imageUrl,
-          prompt: prompt.trim(),
-          provider: 'imagen-3.0',
-        });
-      }
+    if (response.ok) {
+      const data = await response.json();
+      const image = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData)?.inlineData;
+      if (image?.data && ['image/png','image/jpeg','image/webp'].includes(image.mimeType) && image.data.length < 3500000) return {imageUrl:`data:${image.mimeType};base64,${image.data}`,prompt:prompt.trim(),provider:'gemini-image'};
     }
-
-    // 2. Fallback attempt: Pollinations high-res AI image generator (free, zero-downtime, no key needed)
-    const encodedPrompt = encodeURIComponent(prompt.trim());
-    const fallbackUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true&seed=${Math.floor(Math.random() * 1000000)}`;
-
-    return res.status(200).json({
-      imageUrl: fallbackUrl,
-      prompt: prompt.trim(),
-      provider: 'pollinations',
-    });
-  } catch (err) {
-    console.error('[Image Generation Error]:', err);
-    return res.status(500).json({ error: 'Failed to generate image. Please try again.' });
-  }
+  } catch(error) { logFailure('images.generate',error); }
+  // Preserve the existing external image URL fallback. It is a third-party service,
+  // receives the image prompt, and is not covered by text-provider fallback guarantees.
+  return {imageUrl:`https://image.pollinations.ai/prompt/${encodeURIComponent(prompt.trim())}?width=1024&height=1024&nologo=true&seed=${Math.floor(Math.random()*1000000)}`,prompt:prompt.trim(),provider:'pollinations'};
+}
+export default async function handler(req,res) {
+  if (req.method !== 'POST') return sendError(res,new AppError('METHOD_NOT_ALLOWED',405,'Please send a POST request.',false));
+  if (!extractAuthUser(req)) return sendError(res,new AppError('UNAUTHORIZED',401,'Please sign in to generate images.',false));
+  try { return res.status(200).json(await generateImage(req.body?.prompt)); }
+  catch(error) { logFailure('images',error); return sendError(res,error); }
 }

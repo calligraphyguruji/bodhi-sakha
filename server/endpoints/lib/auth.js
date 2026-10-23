@@ -1,20 +1,24 @@
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 
-const RAW_SECRET = process.env.JWT_SECRET || process.env.AUTH_SECRET;
-if (!RAW_SECRET && process.env.NODE_ENV === 'production') {
-  console.warn('⚠️ WARNING: JWT_SECRET environment variable is missing. Using emergency deployment secret.');
+import { AppError } from '../../../lib/server/errors.js';
+
+function getSecret() {
+  const secret = process.env.JWT_SECRET || process.env.AUTH_SECRET;
+  if (!secret || secret.length < 32 || /^(your_|placeholder)/i.test(secret)) {
+    throw new AppError('CONFIGURATION', 503, undefined, false);
+  }
+  return secret;
 }
-const JWT_SECRET = RAW_SECRET || 'bodhisakha-prod-jwt-secret-key-32chars-fallback!';
 const TOKEN_EXPIRY = '7d';
 
 export function signToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: TOKEN_EXPIRY });
+  return jwt.sign(payload, getSecret(), { expiresIn: TOKEN_EXPIRY, algorithm: 'HS256' });
 }
 
 export function verifyToken(token) {
   try {
-    return jwt.verify(token, JWT_SECRET);
+    return jwt.verify(token, getSecret(), { algorithms: ['HS256'] });
   } catch {
     return null;
   }
@@ -42,7 +46,7 @@ export function extractAuthUser(req) {
     const cookies = Object.fromEntries(
       req.headers.cookie.split(';').map((c) => {
         const [k, ...v] = c.trim().split('=');
-        return [k, decodeURIComponent(v.join('='))];
+        return [k, v.join('=')];
       })
     );
     token = cookies.token || cookies.auth_token;
@@ -53,7 +57,7 @@ export function extractAuthUser(req) {
 }
 
 /**
- * Express middleware to enforce authentication
+ * Optional middleware to enforce authentication
  */
 export function requireAuth(req, res, next) {
   const user = extractAuthUser(req);

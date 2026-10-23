@@ -1,8 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { db } from '../server/endpoints/lib/db.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+process.env.NODE_ENV = 'test';
+process.env.ALLOW_LOCAL_DB = 'true';
+process.env.JWT_SECRET = 'unit-test-secret-which-is-at-least-32-characters';
+delete process.env.DATABASE_URL;
+const testDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bodhi-tests-'));
+process.env.LOCAL_DATA_DIR = testDir;
+const { db } = await import('../server/endpoints/lib/db.js');
+test.after(() => fs.rmSync(testDir,{recursive:true,force:true}));
 import { hashPassword, comparePassword, signToken, verifyToken } from '../server/endpoints/lib/auth.js';
-import { extractMemoriesFromConversation, formatMemoriesForPrompt } from '../server/endpoints/lib/memory.js';
+import { formatMemoriesForPrompt } from '../server/endpoints/lib/memory.js';
 
 test('Security & Persistence Suite', async (t) => {
   await t.test('Password hashing and verification', async () => {
