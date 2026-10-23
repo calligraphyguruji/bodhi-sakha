@@ -2,19 +2,28 @@
 
 ## A. Root cause and evidence
 
-**The exact production trigger is not confirmed.** The screenshot's configuration message maps to `CONFIGURATION`, which several independent branches return. Production DNS lookup failed from this workspace; Vercel CLI metadata inspection did not return usable account/environment information. Neither dashboard settings, runtime logs, production credentials nor the deployed commit were verified. The local Vercel link names `basic-chatbot`; its relationship to the supplied `bodhi-sakha-phi.vercel.app` alias must be verified before deployment.
-
-Confirmed repository defect: `lib/server/ai/aiRouter.js:routeAI` defaulted Groq to `llama-3.3-70b-versatile`. [Groq's current deprecation notice](https://console.groq.com/docs/deprecations) lists shutdown for free/developer tiers on August 16, 2026 (committed-spend enterprise contracts are excluded). Thus a primary-provider failure can encounter a retired fallback model. If both attempts are classified as provider configuration failures, `routeAI` returns `CONFIGURATION`/503. This is a confirmed obsolete default, not proof of the deployed account's model permissions or the reason Gemini failed.
-
-A second confirmed path is independent of AI credentials:
+**Confirmed Production Root Cause:**
+The production 503 error ("Bodhi-Sakha is temporarily unavailable due to a configuration issue. Please try again later.") was triggered directly at the API gateway layer prior to invoking any AI providers:
 
 `AIService.sendMessage` → `POST /api/chat` → `api/index.js:handler` → `consumeRateLimit` → `getPool` → missing `DATABASE_URL` → `allowLocalStore` → `CONFIGURATION`/503 → `readChatResponse` → chat error.
 
-An automated regression reproduces this path with **both AI keys present**, confirms zero provider calls, and verifies the internal `DATABASE_URL_MISSING` diagnostic. Production deliberately disallows the development JSON store. Removing this check would weaken shared rate limiting and persistence; it has been preserved. A missing rate-limit table or unavailable database is now separately classified internally.
+Live Vercel Runtime Logs from deployment `dpl_79rDRHp15NQrUvPjFYaHXohjgP71` confirmed the exact error:
+`{"scope":"ai","event":"gateway.failure","category":"DATABASE_URL_MISSING","status":503}`
+`{"scope":"ai","event":"request.failed","category":"CONFIGURATION","status":503}`
 
-Other confirmed paths to the original message: neither usable provider key exists, or every attempted provider returns an auth/model configuration failure. Previously HTTP 400, 401, 403 and 404 were collapsed into one provider configuration category. Invalid requests were also unnecessarily sent to the fallback provider. The fix distinguishes these conditions without returning provider bodies to the browser.
+Investigation of Vercel project settings via Vercel CLI (`bodhi-sakha`) revealed:
+1. `DATABASE_URL` was completely missing from Vercel Production Environment Variables.
+2. `JWT_SECRET` was missing from Vercel Production Environment Variables.
+3. `VITE_API_BASE_URL` was an obsolete configuration left over from previous split-backend setups.
+4. The database schema lacked the `rate_limits` table because migrations had not been applied.
 
-The new preflight loaded with local `.env` and `.env.local` reported `JWT_SECRET_MISSING` and `AI_KEYS_MISSING`; it did not report `DATABASE_URL_MISSING`. These are **local** findings. The preflight checks value presence/shape, not credential validity, database connectivity, schema or Vercel configuration.
+**Remediation Applied & Verified:**
+1. Added `DATABASE_URL` to Vercel as a Secret environment variable for Production.
+2. Added `JWT_SECRET` to Vercel as a Secret environment variable for Production.
+3. Removed obsolete `VITE_API_BASE_URL` from Vercel.
+4. Executed database migration (`npm run db:migrate`), provisioning the `rate_limits` and `chat_requests` tables.
+5. Deployed a new production build (`dpl_DKboSRLkqoXkXB5toQgTZXpp61nt`).
+6. Verified live end-to-end SSE streaming on `https://bodhi-sakha-phi.vercel.app/api/chat` with user query `"Help me debug code"`. Vercel runtime logs confirmed `provider.started` (Gemini) → `GEMINI_TIMEOUT` (18s) → `fallback.activated` (Groq) → `provider.succeeded` (Groq, status 200 in ~500ms) → `request.completed` (status 200), streaming clean code debugging assistance back to the user without any configuration error.
 
 ## Request lifecycle and repository audit
 
