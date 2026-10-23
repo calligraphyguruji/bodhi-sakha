@@ -15,7 +15,6 @@ const SUGGESTIONS = [
   'Explain a programming concept',
   'Analyze my PDF document',
   'Help me debug code',
-  'Generate an image of a futuristic city',
   'Help me plan a full-stack project',
 ];
 
@@ -359,7 +358,7 @@ function ChatbotSession() {
               <div className="chat-empty-hero">
                 <div className="empty-hero-icon">✨</div>
                 <h2>How can I help you today?</h2>
-                <p>Ask a question, upload a document, enable Deep Thinking, or generate creative images.</p>
+                <p>Ask anything, upload documents, explore ideas, or enable Deep Thinking for more detailed responses.</p>
                 <div className="suggested-prompts-grid">
                   {SUGGESTIONS.map((sug, i) => (
                     <button
