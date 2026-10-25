@@ -15,6 +15,7 @@ import { isSpeechRecognitionSupported, initSpeechRecognizer } from '../utils/spe
 function ChatInput({
   onSendMessage,
   onFileUpload,
+  onRemoveAttachment,
   disabled = false,
   reasoningMode = false,
   onToggleReasoning,
@@ -23,6 +24,8 @@ function ChatInput({
   const [isListening, setIsListening] = useState(false);
   const [attachments, setAttachments] = useState([]);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState('');
+  const uploadBusy = useRef(false);
 
   const recognitionRef = useRef(null);
   const textareaRef = useRef(null);
@@ -79,53 +82,57 @@ function ChatInput({
     }
   };
 
-  const handleFileChange = async (e) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
-
+  const addFiles = async (selected) => {
+    if (disabled || uploadBusy.current) return;
+    uploadBusy.current = true;
     setUploading(true);
-    for (const file of files) {
-      // Validate file size (15MB limit)
-      if (file.size > 15 * 1024 * 1024) {
-        alert(`"${file.name}" exceeds the 15MB file size limit.`);
-        continue;
-      }
-
-      try {
-        if (file.size > 3 * 1024 * 1024) {
-          const uploaded = await onFileUpload({fileName:file.name,fileType:file.type,file});
+    setUploadError('');
+    let imageCount = attachments.filter(a => a.fileType?.startsWith('image/')).length;
+    let imageBytes = attachments.filter(a => a.fileType?.startsWith('image/')).reduce((sum,a) => sum+(a.fileSize || 0),0);
+    let fileCount = attachments.length;
+    const errors = [];
+    try {
+      for (const file of Array.from(selected)) {
+        try {
+          const isImage = /\.(png|jpe?g|webp)$/i.test(file.name) || file.type.startsWith('image/');
+          if (!/\.(pdf|docx|txt|csv|json|png|jpe?g|webp)$/i.test(file.name)) throw new Error('Unsupported file. Choose PDF, DOCX, TXT, CSV, JSON, JPEG, PNG or WebP.');
+          if (fileCount >= 10 || (isImage && imageCount >= 3)) throw new Error('Attach up to 10 files, including up to 3 images.');
+          if (!file.size || file.size > (isImage ? 2 : 15) * 1024 * 1024) throw new Error(isImage ? 'Images must be no larger than 2 MB. Please resize this image.' : 'Files must be no larger than 15 MB.');
+          if (isImage && imageBytes + file.size > 2800000) throw new Error('Attach images totaling no more than 2.8 MB.');
+          let fileData;
+          if (file.size <= 3 * 1024 * 1024) {
+            fileData = await new Promise((resolve,reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(reader.result);
+              reader.onerror = () => reject(new Error('Unable to read this file.'));
+              reader.readAsDataURL(file);
+            });
+          }
+          const uploaded = await onFileUpload({fileName:file.name,fileType:file.type,fileData,file});
           setAttachments(prev => [...prev,uploaded]);
-          continue;
-        }
-        const reader = new FileReader();
-        reader.readAsDataURL(file);
-        await new Promise((resolve, reject) => {
-          reader.onload = async () => {
-            try {
-              const uploaded = await onFileUpload({
-                fileName: file.name,
-                fileType: file.type,
-                fileData: reader.result,
-              });
-              setAttachments((prev) => [...prev, uploaded || { fileName: file.name, fileType: file.type }]);
-              resolve();
-            } catch (err) {
-              alert(err.message || `Failed to process ${file.name}`);
-              reject(err);
-            }
-          };
-          reader.onerror = reject;
-        });
-      } catch (err) {
-        console.error('File read error:', err);
+          fileCount++;
+          if (isImage) {imageCount++;imageBytes += file.size;}
+        } catch (err) { errors.push(`${file.name}: ${err.message || 'Unable to process this file.'}`); }
       }
+    } finally {
+      setUploadError(errors.join(' '));
+      setUploading(false);
+      uploadBusy.current = false;
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
-    setUploading(false);
-    if (fileInputRef.current) fileInputRef.current.value = '';
   };
+  const handleFileChange = e => addFiles(e.target.files || []);
 
-  const removeAttachment = (index) => {
-    setAttachments((prev) => prev.filter((_, i) => i !== index));
+  const removeAttachment = async (index) => {
+    if (disabled || uploadBusy.current) return;
+    const removed = attachments[index];
+    uploadBusy.current = true;
+    setUploading(true);
+    try {
+      await onRemoveAttachment?.(removed);
+      setAttachments(prev => prev.filter(a => a.id !== removed.id));
+    } catch (error) {setUploadError(error.message);}
+    finally {uploadBusy.current = false;setUploading(false);}
   };
 
   const handleKeyDown = (e) => {
@@ -158,12 +165,17 @@ function ChatInput({
   };
 
   return (
-    <div className="composer-wrapper">
+    <div className="composer-wrapper"
+      onDragOver={e => {e.preventDefault();}}
+      onDrop={e => {e.preventDefault();addFiles(e.dataTransfer.files);}}>
+      {uploading && <p role="status">Uploading and validating attachments…</p>}
+      {uploadError && <p role="alert">{uploadError}</p>}
       {/* Attachment Chips */}
       {attachments.length > 0 && (
         <div className="composer-attachments-bar">
           {attachments.map((att, idx) => (
             <div key={idx} className="attachment-chip">
+              {att.imageData && <img className="attachment-thumbnail" src={att.imageData} alt={att.fileName} />}
               <span className="file-icon">
                 {att.fileType?.startsWith('image/') ? '🖼️' : att.fileName?.endsWith('.pdf') ? '📄' : '📝'}
               </span>
@@ -171,6 +183,7 @@ function ChatInput({
               <button
                 type="button"
                 className="remove-chip-btn"
+                disabled={disabled || uploading}
                 onClick={() => removeAttachment(idx)}
                 aria-label={`Remove ${att.fileName}`}
               >

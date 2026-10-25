@@ -97,7 +97,7 @@ export const AIService = {
   },
 
   // --- CHAT STREAMING & MESSAGES ---
-  async sendMessage({ message, history, conversationId, requestId, attachmentIds = [], reasoningMode = false, fileContext = '', signal }) {
+  async sendMessage({ message, history, conversationId, requestId, attachmentIds = [], attachments = [], reasoningMode = false, fileContext = '', signal }) {
     return fetch(`/api/chat`, {
       method: 'POST',
       headers: getAuthHeaders(),
@@ -107,6 +107,7 @@ export const AIService = {
         conversationId,
         requestId,
         attachmentIds,
+        attachments,
         reasoningMode,
         fileContext,
         stream: 'sse',
@@ -137,6 +138,17 @@ export const AIService = {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error?.message || (typeof data.error === 'string' ? data.error : null) || 'Upload failed');
     return data.file;
+  },
+
+  async deleteFile(id) {
+    const res = await fetch(`/api/files/${encodeURIComponent(id)}`,{method:'DELETE',headers:getAuthHeaders()});
+    if (!res.ok) throw new Error('Unable to remove the uploaded file. Please try again.');
+  },
+
+  async getFileImage(id, signal) {
+    const res = await fetch(`/api/files/${encodeURIComponent(id)}`,{headers:getAuthHeaders(),signal});
+    if (!res.ok) throw new Error('Image unavailable. Please attach it again.');
+    return (await res.json()).imageData;
   },
 
   // --- IMAGE GENERATION ---

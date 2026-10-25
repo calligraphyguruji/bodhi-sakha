@@ -235,14 +235,15 @@ function ChatbotSession() {
     setSpeakingMessageId(null);
     const requestId = retry?.requestId || crypto.randomUUID();
     const botId = retry?.botId || `bot_${requestId}`;
-    const history = retry?.history || messages.filter(m => !m.error && !m.partial).map(m => ({sender:m.sender,text:m.text}));
+    const serialize = a => ({id:a.id,fileName:a.fileName,fileType:a.fileType,...(!user && a.imageData ? {imageData:a.imageData} : {})});
+    const history = retry?.history || messages.filter(m => !m.error && !m.partial).filter((m,i,all) => i >= all.length-97 || m.attachments?.some(a => a.fileType?.startsWith('image/'))).slice(-100).map(m => ({sender:m.sender,text:m.text,attachments:m.attachments?.map(serialize)}));
     const actualMessage = userText.trim() || 'Please analyze the attached documents.';
     const snapshot = {requestId,botId,history,userText,attachments,reasoningMode:retry?.reasoningMode ?? reasoningMode,conversationId:retry?.conversationId || activeConversationId};
     let currentConvId = snapshot.conversationId;
     if (retry) setMessages(prev => prev.map(m => m.id === botId ? {...m,text:'',error:null,partial:false} : m));
     else setMessages(prev => [...prev,{id:`user_${requestId}`,sender:'user',text:actualMessage,attachments},{id:botId,sender:'bot',text:'',reasoningMode:snapshot.reasoningMode}]);
     setIsTyping(true);
-    setStatusMessage(snapshot.reasoningMode ? 'Thinking deeply through the problem...' : 'Thinking...');
+    setStatusMessage(attachments.some(a => a.fileType?.startsWith('image/')) ? 'Analyzing images...' : snapshot.reasoningMode ? 'Thinking deeply through the problem...' : 'Thinking...');
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const timer = setTimeout(() => controller.abort(),58000);
@@ -254,8 +255,8 @@ function ChatbotSession() {
         setActiveConversationId(conv.id);
       }
       const contextAttachments = attachments.length ? attachments : [...messages].reverse().find(m => m.attachments?.length)?.attachments || [];
-      const fileContext = contextAttachments.map(a => `[File: ${a.fileName}]\n${a.extractedText || ''}`).join('\n\n').slice(0,15000);
-      const response = await AIService.sendMessage({message:actualMessage,history,conversationId:currentConvId,requestId,attachmentIds:attachments.map(a => a.id).filter(Boolean),reasoningMode:snapshot.reasoningMode,fileContext,signal:controller.signal});
+      const fileContext = contextAttachments.filter(a => !a.fileType?.startsWith('image/')).map(a => `[File: ${a.fileName}]\n${a.extractedText || ''}`).join('\n\n').slice(0,15000);
+      const response = await AIService.sendMessage({message:actualMessage,history,conversationId:currentConvId,requestId,attachments:attachments.map(serialize),attachmentIds:attachments.map(a => a.id).filter(Boolean),reasoningMode:snapshot.reasoningMode,fileContext,signal:controller.signal});
       const result = await readChatResponse(response,text => {
         if (sequence !== requestSequence.current) return;
         setStatusMessage('');
@@ -396,8 +397,10 @@ function ChatbotSession() {
         {/* Composer Bar */}
         <div className="chat-bottom-bar">
           <ChatInput
+            key={activeConversationId || 'new'}
             onSendMessage={handleSendMessage}
             onFileUpload={handleFileUpload}
+            onRemoveAttachment={user ? attachment => AIService.deleteFile(attachment.id) : undefined}
             disabled={isTyping}
             reasoningMode={reasoningMode}
             onToggleReasoning={() => setReasoningMode(!reasoningMode)}

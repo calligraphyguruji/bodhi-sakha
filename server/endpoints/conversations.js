@@ -48,7 +48,7 @@ export default async function handler(req, res) {
       }
       const messages = await db.getMessages(conversationId);
       const files = await db.getConversationFiles(conversationId, user.id);
-      return res.status(200).json({ conversation: conv, messages, files });
+      return res.status(200).json({ conversation: conv, messages, files: files.map(f => ({...f,storage_url:undefined})) });
     }
 
     // 3. CREATE CONVERSATION

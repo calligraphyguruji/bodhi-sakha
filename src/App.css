@@ -1387,3 +1387,9 @@
 
 .chat-error { margin-top: 0.6rem; color: var(--text-primary); }
 .chat-error p { margin: 0 0 0.5rem; }
+
+.attachment-thumbnail { width: 64px; height: 64px; object-fit: contain; border-radius: 6px; }
+.message-attachment-image { display: block; width: auto; max-width: min(320px, 65vw); max-height: 260px; object-fit: contain; border-radius: 8px; }
+.message-attachments-display { flex-wrap: wrap; }
+.msg-file-chip:has(.message-attachment-image) { flex-direction: column; align-items: flex-start; max-width: 100%; }
+.composer-attachments-bar { flex-wrap: wrap; }

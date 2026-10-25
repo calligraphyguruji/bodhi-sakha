@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { validateImage } from '../../lib/server/vision.js';
 import { get, del } from '@vercel/blob';
 import { handleUpload } from '@vercel/blob/client';
 import { extractText } from 'unpdf';
@@ -57,11 +58,6 @@ async function parseFileContent(buffer, mimeType, filename) {
     }
   }
 
-  // 4. Images
-  if (mimeType.startsWith('image/')) {
-    return `[Image Attachment: ${filename} (${mimeType})]`;
-  }
-
   return buffer.toString('utf-8').slice(0, 10000);
 }
 
@@ -81,6 +77,13 @@ export default async function handler(req, res) {
         },
       });
       return res.status(200).json(result);
+    }
+    if (req.method === 'GET') {
+      if (!user) throw new AppError('UNAUTHORIZED',401,'Please sign in to view this image.',false);
+      const file = await db.getUploadedFile(url.pathname.split('/')[3], user.id);
+      if (!file?.storage_url?.startsWith('data:image/')) throw new AppError('NOT_FOUND',404,'Image unavailable. Please attach it again.',false);
+      res.setHeader('Cache-Control','private, no-store');
+      return res.status(200).json({imageData:file.storage_url});
     }
     if (req.method === 'DELETE') {
       if (!user) throw new AppError('UNAUTHORIZED',401,'Please sign in to delete files.',false);
@@ -122,12 +125,14 @@ export default async function handler(req, res) {
     validateFile({fileName,fileType,fileSize:buffer.length});
     if (conversationId && (!user || !await db.getConversation(conversationId,user.id))) throw new AppError('NOT_FOUND',404,'Conversation not found.',false);
     try {
-      const extractedText = (await parseFileContent(buffer,fileType,fileName)).slice(0,100000);
+      const isImage = /\.(png|jpe?g|webp)$/i.test(fileName) || fileType.startsWith('image/');
+      if (isImage) fileType = await validateImage(buffer,fileType);
+      const imageData = isImage ? `data:${fileType};base64,${buffer.toString('base64')}` : null;
+      const extractedText = isImage ? '' : (await parseFileContent(buffer,fileType,fileName)).slice(0,100000);
       const id = 'file_'+crypto.randomUUID();
-      // Original documents were never retained. Keep extracted text and metadata only;
-      // avoid returning multi-MB image data URLs that exceed function response limits.
-      if (user) await db.createUploadedFile({id,user_id:user.id,conversation_id:conversationId || null,file_name:fileName,file_type:fileType,file_size:buffer.length,storage_url:null,extracted_text:extractedText});
-      return res.status(user ? 201 : 200).json({file:{id,fileName,fileType,fileSize:buffer.length,hasText:Boolean(extractedText),extractedText}});
+      // Bounded image bytes live in the existing private DB; no public object URLs.
+      if (user) await db.createUploadedFile({id,user_id:user.id,conversation_id:conversationId || null,file_name:fileName,file_type:fileType,file_size:buffer.length,storage_url:imageData,extracted_text:extractedText});
+      return res.status(user ? 201 : 200).json({file:{id,fileName,fileType,fileSize:buffer.length,hasText:Boolean(extractedText),extractedText,...(imageData ? {imageData} : {})}});
     } finally {
       if (temporaryPath) await del(temporaryPath).catch(error => logFailure('blob.cleanup',error));
     }

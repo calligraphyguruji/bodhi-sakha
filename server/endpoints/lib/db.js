@@ -352,6 +352,7 @@ export const db = {
     if (!store.conversations.some(c => c.id === id && c.user_id === userId)) return false;
     store.conversations = store.conversations.filter((c) => !(c.id === id && c.user_id === userId));
     store.messages = store.messages.filter((m) => m.conversation_id !== id);
+    store.uploaded_files = store.uploaded_files.filter(f => f.conversation_id !== id);
     writeLocalStore(store);
     return true;
   },
@@ -485,6 +486,12 @@ export const db = {
     store.uploaded_files.push(item);
     writeLocalStore(store);
     return item;
+  },
+
+  async getUploadedFile(id, userId) {
+    const p = getPool();
+    if (p) return (await p.query('SELECT * FROM uploaded_files WHERE id=$1 AND user_id=$2',[id,userId])).rows[0];
+    return readLocalStore().uploaded_files.find(f => f.id === id && f.user_id === userId);
   },
 
   async getConversationFiles(conversationId, userId) {

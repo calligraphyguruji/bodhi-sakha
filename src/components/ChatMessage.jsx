@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react';
+import AttachmentImage from './AttachmentImage';
 import { BotAvatar, UserAvatar } from './Avatars';
 
 const MarkdownContent = lazy(() => import('./MarkdownContent'));
@@ -28,7 +29,7 @@ function ChatMessage({ message, isSpeaking = false, onToggleSpeak, onRetry }) {
             <div className="message-attachments-display">
               {attachments.map((att, i) => (
                 <div key={i} className="msg-file-chip">
-                  <span>📄</span>
+                  {att.fileType?.startsWith('image/') ? <AttachmentImage attachment={att} /> : <span>📄</span>}
                   <span className="file-name">{att.fileName}</span>
                 </div>
               ))}

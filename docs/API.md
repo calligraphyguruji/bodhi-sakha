@@ -78,3 +78,54 @@ Large-upload tokens constrain path and size; arbitrary URLs are never accepted f
 Resource collections currently retain the existing unpaginated API contract. Large histories, especially repeated generated image data URLs, may exceed function response limits; test representative account sizes before release. Authentication uses localStorage bearer tokens as in the existing app; logout is client-side token removal rather than immediate server revocation.
 
 Every gateway response includes a server-generated `X-Request-ID`. Runtime Logs correlate this ID with request outcome, provider attempts, fallback activation, status and duration. Internal auth/model/database categories are never sent in the response. Invalid provider requests return 400 without fallback; provider authentication, retired model, quota, timeout and service failures can fall back before any output.
+
+## Image understanding
+
+Upload JPEG, PNG or WebP through `/api/files`. The server decodes all pixels using
+Sharp, checks the actual format against the claimed MIME, rejects corruption,
+animation and images above 24 megapixels. Each image is capped at 2 MiB;
+`MAX_IMAGE_BYTES` can lower that limit. Documents retain their existing 15 MiB
+limit and extraction workflow. No image resizing or lossy compression occurs.
+
+Successful image uploads also return `imageData`, a validated MIME-preserving
+base64 data URL used for previews. Signed-in originals are retained in the existing
+private `uploaded_files.storage_url` TEXT column, with message metadata containing
+only attachment IDs, names and types. No schema change or new storage service is
+required. Removing an unsent attachment deletes the signed-in upload. Deleting a
+conversation cascades to its uploaded images. Images uploaded and then abandoned
+without removal remain ordinary private uploaded-file records.
+
+Guests send `attachments: [{id,fileName,fileType,imageData}]` on the current turn,
+and the same attachment fields inside the original user turn of `history` on
+follow-ups. These bytes live only in browser memory; reloading a guest chat loses
+its image context. Signed-in clients send `attachmentIds`, an owned
+`conversationId`, and stable `requestId`; the server resolves images from the
+authenticated database records and uses persisted message history. Browser image
+bytes are not retransmitted on signed-in follow-ups. Up to three images totaling
+2,800,000 decoded bytes may be included across a conversation; exceeding this
+returns `VISION_LIMIT` (413) with instructions to start a new chat. The gateway
+still caps JSON at 4.25 MiB, below Vercel's 4.5 MB function limit.
+
+`GET /api/files/:id` requires authentication and returns `{imageData}` for an owned
+image, with `Cache-Control: private, no-store`. Other users get 404. Conversation
+responses exclude stored image bytes; thumbnails load through this private route.
+Missing, deleted or legacy images return `IMAGE_CONTEXT_MISSING` (422), asking the
+user to reattach. Previously discarded originals cannot be recovered.
+
+Gemini receives text plus `{inlineData:{mimeType,data}}` parts in the original user
+turn, using the current stable Flash vision model `gemini-3.8-flash` by default.
+Groq fallback uses `qwen/qwen3.8-27b` and OpenAI-compatible `image_url` content parts
+containing data URLs. `GROQ_MODEL` continues to control text-only fallback;
+`GROQ_VISION_MODEL` must be in the verified vision allowlist. An unknown override
+skips Groq vision. Provider account access is still required. These defaults were
+verified against [Gemini model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
+[Gemini REST parts](https://ai.google.dev/api/generate-content#Part), and
+[Groq vision documentation](https://console.groq.com/docs/vision) on 2026-10-25.
+
+Vision failures before output, including invalid upstream multimodal requests,
+can trigger one fallback attempt; text-only invalid requests retain the existing
+no-fallback behavior. After output starts the server never mixes providers.
+`VISION_UNAVAILABLE` (503) returns: “Sorry, I’m having trouble analyzing this image
+right now. Please try again shortly.” Image contents and secrets are never logged.
+Images are treated as untrusted data, and response instructions require grounded
+observations and explicit uncertainty for unreadable content.
