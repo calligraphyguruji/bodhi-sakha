@@ -40,8 +40,9 @@ files and provider settings were left unchanged. The old `MAX_IMAGE_BYTES` setti
 is intentionally ignored so an existing 2 MiB value cannot silently defeat the
 shared 5 MiB requirement. Its obsolete entry was removed only from `.env.example`.
 
-The migration was tested in isolated in-memory PostgreSQL using PGlite; it was
-not applied to the project's hosted database. A native local Postgres server
+The migration was initially tested in isolated in-memory PostgreSQL using PGlite.
+During the production upload-start investigation it was applied successfully to
+the configured hosted database, restoring the live upload endpoint. A native local Postgres server
 could not initialize because the sandbox blocks shared-memory creation.
 
 ## Verification
@@ -69,10 +70,12 @@ creation, chunk insertion/retry/conflict, completion guard, reads and deletion.
 
 Browser/mobile Playwright tests were updated for the protocol and the 5 MiB error,
 but could not launch: the required bundled browser is absent (installed Chrome
-also aborted in this sandbox during the preceding vision work). Real-provider
-interpretation was not tested because no usable Gemini/Groq keys are configured
-locally. Mocked provider replies prove transport/routing, not recognition accuracy.
-No production deployment or hosted-database migration was performed.
+also aborted in this sandbox during the preceding vision work). A subsequent live production test uploaded an exact 5,242,880-byte synthetic C++
+screenshot and obtained a grounded response: the provider read the visible
+`BODHI-7319` identifier, explained the sum function, and returned O(n) time and
+O(1) auxiliary space. The synthetic guest image was discarded afterward. This
+verifies real production upload and vision inference; it does not independently
+verify a live forced Groq fallback. Local provider tests remain mocked.
 
 Groq has a separate 20 MB encoded-request ceiling. A single 5 MiB original fits;
 three maximum originals exceed that provider ceiling. In that case Gemini still
@@ -117,5 +120,9 @@ tables were present; querying it returned PostgreSQL `42P01` (undefined table).
 The Vercel build configuration omitted the separately documented migration step.
 `vercel.json` now runs the additive/idempotent migration before the frontend build,
 so deployment supplies the schema needed by the chunk protocol. No provider keys
-or environment values were changed. Live post-deployment verification is recorded
-in the task response.
+or environment values were changed. After applying the migration, the production upload-start request returned HTTP
+200 (previously HTTP 503). An exact 5 MiB synthetic screenshot then completed the
+whole production pipeline and the AI correctly read and explained its actual
+contents. The synthetic upload was removed. The deployment configuration fix was
+pushed as commit `74c6077` so future deployments run the required migration
+automatically before publishing.

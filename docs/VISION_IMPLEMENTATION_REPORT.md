@@ -61,10 +61,10 @@ Official capability/format checks: [Gemini 3.8 Flash](https://ai.google.dev/gemi
 | Built client checked against configured local secret values | No secret values found |
 | Playwright browser/mobile workflow | Added; unable to execute: bundled browser missing, installed Chrome aborts with SIGABRT/EPERM in sandbox |
 | Postman CLI simulation | Failed to start mocks; direct HTTP fixture server succeeded; see simulation context |
-| Real Gemini/Groq image interpretation | Not performed: no usable provider credentials configured locally |
+| Real image interpretation | Verified subsequently through production: an exact 5 MiB C++ screenshot was read and explained correctly; see current size report. Live forced Groq fallback remains unverified. |
 | Environment preflight with local env files loaded | AI_KEYS_MISSING; database/auth configuration present locally, values not disclosed |
 | Type checking | No standalone typecheck script; project is JavaScript/JSX; lint and build passed |
-| Vercel production runtime/deployment | Not deployed or verified live; existing serverless route/CSP/config retained |
+| Vercel production runtime | Exact 5 MiB upload and real vision inference verified after applying the missing staging-table migration; deployment now runs migrations before building. |
 
 Automated code review identified three actionable findings: unrelated routing after image turns, combined composer size checks, and browser completion waits. All three were corrected and regression checks added where executable. The follow-up CodeRabbit review completed with zero findings in the tracked files it reviewed. Newly added files were inspected locally and exercised by the tests; they were not listed in CodeRabbit’s reviewed-file output.
 
