@@ -133,8 +133,8 @@ observations and explicit uncertainty for unreadable content.
 
 ### Bounded image upload protocol (5 MiB per original)
 
-Run `npm run db:migrate` against the deployment database before releasing this
-protocol. The additive `image_uploads` staging table uses the existing `DATABASE_URL`.
+Vercel runs `npm run db:migrate && npm run build` before publishing this
+protocol. Manual deployments must run `npm run db:migrate` against their target database first. The additive `image_uploads` staging table uses the existing `DATABASE_URL`.
 No new credentials, paid storage service, or persistent backend is needed. Existing
 provider keys and environment files remain unchanged; the legacy `MAX_IMAGE_BYTES`
 setting is no longer consulted because the frontend and backend share one fixed limit.

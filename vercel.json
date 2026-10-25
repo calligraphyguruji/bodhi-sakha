@@ -38,5 +38,6 @@
       "maxDuration": 60
     }
   },
-  "devCommand": "vite --port $PORT"
+  "devCommand": "vite --port $PORT",
+  "buildCommand": "npm run db:migrate && npm run build"
 }

@@ -30,8 +30,10 @@ persist in the existing private uploaded-files table. Documents retain their
 
 ## Required release step
 
-Run `npm run db:migrate` against the deployment database **before deploying this
-client/server pair**. This creates the additive `image_uploads` staging table.
+Vercel runs `npm run db:migrate && npm run build` before publishing this
+client/server pair. This creates the additive `image_uploads` staging table and
+blocks publication if migration fails. For a manual deployment outside Vercel,
+run `npm run db:migrate` against the target database first.
 No existing rows or columns are dropped. The migration can be rerun safely.
 No new environment variables, keys or storage services are needed. Actual `.env`
 files and provider settings were left unchanged. The old `MAX_IMAGE_BYTES` setting
@@ -104,3 +106,16 @@ support 100 MB. Sources: [Vercel function limits](https://vercel.com/docs/functi
 | `docs/API.md` | New protocol, limits, security, migration and provider constraints |
 | `docs/VISION_IMPLEMENTATION_REPORT.md` | Correct outdated size/transport guidance and link to this report |
 | `docs/IMAGE_UPLOAD_SIZE.md` | This change and validation report |
+
+
+## Production upload-start failure (2026-10-25)
+
+The live `/api/files?action=image-start` endpoint returned HTTP 503 with the generic
+AI connectivity message before any pixels or provider call. A read-only check of
+the configured database confirmed `public.image_uploads` was absent while existing
+tables were present; querying it returned PostgreSQL `42P01` (undefined table).
+The Vercel build configuration omitted the separately documented migration step.
+`vercel.json` now runs the additive/idempotent migration before the frontend build,
+so deployment supplies the schema needed by the chunk protocol. No provider keys
+or environment values were changed. Live post-deployment verification is recorded
+in the task response.
