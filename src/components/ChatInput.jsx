@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import {MAX_IMAGE_SIZE, MAX_IMAGES, IMAGE_SIZE_ERROR, isImageFile} from '../utils/uploadLimits.js';
 import { isSpeechRecognitionSupported, initSpeechRecognizer } from '../utils/speechUtils';
 
 /**
@@ -88,19 +89,17 @@ function ChatInput({
     setUploading(true);
     setUploadError('');
     let imageCount = attachments.filter(a => a.fileType?.startsWith('image/')).length;
-    let imageBytes = attachments.filter(a => a.fileType?.startsWith('image/')).reduce((sum,a) => sum+(a.fileSize || 0),0);
     let fileCount = attachments.length;
     const errors = [];
     try {
       for (const file of Array.from(selected)) {
         try {
-          const isImage = /\.(png|jpe?g|webp)$/i.test(file.name) || file.type.startsWith('image/');
+          const isImage = isImageFile(file.name,file.type);
           if (!/\.(pdf|docx|txt|csv|json|png|jpe?g|webp)$/i.test(file.name)) throw new Error('Unsupported file. Choose PDF, DOCX, TXT, CSV, JSON, JPEG, PNG or WebP.');
-          if (fileCount >= 10 || (isImage && imageCount >= 3)) throw new Error('Attach up to 10 files, including up to 3 images.');
-          if (!file.size || file.size > (isImage ? 2 : 15) * 1024 * 1024) throw new Error(isImage ? 'Images must be no larger than 2 MB. Please resize this image.' : 'Files must be no larger than 15 MB.');
-          if (isImage && imageBytes + file.size > 2800000) throw new Error('Attach images totaling no more than 2.8 MB.');
+          if (fileCount >= 10 || (isImage && imageCount >= MAX_IMAGES)) throw new Error('Attach up to 10 files, including up to 3 images.');
+          if (!file.size || file.size > (isImage ? MAX_IMAGE_SIZE : 15 * 1024 * 1024)) throw new Error(isImage ? IMAGE_SIZE_ERROR : 'Files must be no larger than 15 MB.');
           let fileData;
-          if (file.size <= 3 * 1024 * 1024) {
+          if (!isImage && file.size <= 3 * 1024 * 1024) {
             fileData = await new Promise((resolve,reject) => {
               const reader = new FileReader();
               reader.onload = () => resolve(reader.result);
@@ -111,7 +110,7 @@ function ChatInput({
           const uploaded = await onFileUpload({fileName:file.name,fileType:file.type,fileData,file});
           setAttachments(prev => [...prev,uploaded]);
           fileCount++;
-          if (isImage) {imageCount++;imageBytes += file.size;}
+          if (isImage) imageCount++;
         } catch (err) { errors.push(`${file.name}: ${err.message || 'Unable to process this file.'}`); }
       }
     } finally {
@@ -194,6 +193,7 @@ function ChatInput({
         </div>
       )}
 
+      <small className="attachment-size-hint">JPG, JPEG, PNG, WebP · Up to 5 MB per image</small>
       {/* Main Composer Box */}
       <form className="chat-input-box" onSubmit={handleSubmit}>
         <textarea

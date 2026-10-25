@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import {IMAGE_CHUNK_SIZE} from '../../src/utils/uploadLimits.js';
+import {startImageUpload,readImageUpload,saveImageChunk,uploadedImageBuffer,stageValidatedGuestImage} from '../../lib/server/imageUploads.js';
 import { validateImage } from '../../lib/server/vision.js';
 import { get, del } from '@vercel/blob';
 import { handleUpload } from '@vercel/blob/client';
@@ -67,6 +69,33 @@ export default async function handler(req, res) {
   const action = url.searchParams.get('action');
   try {
     const body = req.body || {};
+    if (req.method === 'POST' && ['image-start','image-chunk','image-complete','image-discard'].includes(action)) {
+      if (action === 'image-start') {
+        if (body.conversationId && (!user || !await db.getConversation(body.conversationId,user.id))) throw new AppError('NOT_FOUND',404,'Conversation not found.',false);
+        return res.status(200).json(await startImageUpload(db,body,user?.id));
+      }
+      if (action === 'image-complete' && user) {
+        const existing=await db.getUploadedFile(body.id,user.id);
+        if (existing) return res.status(200).json({file:{id:existing.id,fileName:existing.file_name,fileType:existing.file_type,fileSize:existing.file_size,hasText:false,extractedText:''}});
+      }
+      const upload=await readImageUpload(db,body.id,body.imageToken,user?.id);
+      if (action === 'image-discard') {
+        await db.deleteImageUpload(upload.id,upload.token_hash);
+        return res.status(200).json({success:true});
+      }
+      if (action === 'image-chunk') {
+        await saveImageChunk(db,upload,body);
+        return res.status(200).json({success:true});
+      }
+      const buffer=uploadedImageBuffer(upload);
+      const fileType=await validateImage(buffer,upload.file_type);
+      if (upload.conversation_id && !await db.getConversation(upload.conversation_id,user?.id)) throw new AppError('NOT_FOUND',404,'Conversation not found.',false);
+      if (user) {
+        await db.createUploadedFile({id:upload.id,user_id:user.id,conversation_id:upload.conversation_id,file_name:upload.file_name,file_type:fileType,file_size:buffer.length,storage_url:`data:${fileType};base64,${buffer.toString('base64')}`,extracted_text:''});
+        await db.deleteImageUpload(upload.id,upload.token_hash);
+      } else await db.finishImageUpload(upload.id,upload.token_hash,fileType);
+      return res.status(200).json({file:{id:upload.id,fileName:upload.file_name,fileType,fileSize:buffer.length,hasText:false,extractedText:'',...(!user ? {imageToken:body.imageToken} : {})}});
+    }
     if (req.method === 'POST' && body.type?.startsWith('blob.')) {
       const result = await handleUpload({ request: req, body,
         onBeforeGenerateToken: async (pathname, clientPayload) => {
@@ -83,6 +112,14 @@ export default async function handler(req, res) {
       const file = await db.getUploadedFile(url.pathname.split('/')[3], user.id);
       if (!file?.storage_url?.startsWith('data:image/')) throw new AppError('NOT_FOUND',404,'Image unavailable. Please attach it again.',false);
       res.setHeader('Cache-Control','private, no-store');
+      const chunk=url.searchParams.get('chunk');
+      if (chunk !== null) {
+        const index=Number(chunk), count=Math.ceil(file.file_size/IMAGE_CHUNK_SIZE);
+        if (!/^\d+$/.test(chunk) || !Number.isSafeInteger(index) || index>=count) throw invalid('Invalid image chunk.');
+        const bytes=Buffer.from(file.storage_url.split(',')[1],'base64');
+        return res.status(200).json({data:bytes.subarray(index*IMAGE_CHUNK_SIZE,(index+1)*IMAGE_CHUNK_SIZE).toString('base64'),fileType:file.file_type,chunkCount:count});
+      }
+      if (file.file_size>3*1024*1024) throw invalid('Please retrieve this image in chunks.');
       return res.status(200).json({imageData:file.storage_url});
     }
     if (req.method === 'DELETE') {
@@ -129,10 +166,15 @@ export default async function handler(req, res) {
       if (isImage) fileType = await validateImage(buffer,fileType);
       const imageData = isImage ? `data:${fileType};base64,${buffer.toString('base64')}` : null;
       const extractedText = isImage ? '' : (await parseFileContent(buffer,fileType,fileName)).slice(0,100000);
-      const id = 'file_'+crypto.randomUUID();
+      let id = 'file_'+crypto.randomUUID();
+      let imageToken;
+      if (imageData && !user && buffer.length>3*1024*1024) {
+        const reference=await stageValidatedGuestImage(db,buffer,fileName,fileType);
+        id=reference.id;imageToken=reference.imageToken;
+      }
       // Bounded image bytes live in the existing private DB; no public object URLs.
       if (user) await db.createUploadedFile({id,user_id:user.id,conversation_id:conversationId || null,file_name:fileName,file_type:fileType,file_size:buffer.length,storage_url:imageData,extracted_text:extractedText});
-      return res.status(user ? 201 : 200).json({file:{id,fileName,fileType,fileSize:buffer.length,hasText:Boolean(extractedText),extractedText,...(imageData ? {imageData} : {})}});
+      return res.status(user ? 201 : 200).json({file:{id,fileName,fileType,fileSize:buffer.length,hasText:Boolean(extractedText),extractedText,...(imageToken ? {imageToken} : {}),...(imageData && buffer.length<=3*1024*1024 ? {imageData} : {})}});
     } finally {
       if (temporaryPath) await del(temporaryPath).catch(error => logFailure('blob.cleanup',error));
     }

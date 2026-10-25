@@ -131,6 +131,16 @@ export async function initDb() {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
 
+      CREATE TABLE IF NOT EXISTS image_uploads (
+        id VARCHAR(64) PRIMARY KEY,
+        token_hash TEXT NOT NULL,
+        user_id VARCHAR(64) REFERENCES users(id) ON DELETE CASCADE,
+        conversation_id VARCHAR(64) REFERENCES conversations(id) ON DELETE CASCADE,
+        file_name TEXT NOT NULL, file_type TEXT NOT NULL, file_size INTEGER NOT NULL,
+        chunks JSONB NOT NULL DEFAULT '{}', ready BOOLEAN NOT NULL DEFAULT FALSE,
+        expires_at TIMESTAMPTZ NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_image_upload_expiry ON image_uploads(expires_at);
       CREATE TABLE IF NOT EXISTS rate_limits (bucket TEXT PRIMARY KEY, count INT NOT NULL, expires_at TIMESTAMPTZ NOT NULL);
       CREATE TABLE IF NOT EXISTS chat_requests (
         conversation_id VARCHAR(64) NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -150,6 +160,49 @@ export async function initDb() {
 // Low-overhead storage queries
 export const db = {
   isPostgres: () => Boolean(getPool()),
+
+  // Temporary, capability-protected image chunks shared across serverless invocations.
+  async createImageUpload(item) {
+    const p = getPool();
+    if (p) {
+      await p.query('DELETE FROM image_uploads WHERE expires_at < NOW()');
+      await p.query(`INSERT INTO image_uploads(id,token_hash,user_id,conversation_id,file_name,file_type,file_size,expires_at)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,[item.id,item.token_hash,item.user_id,item.conversation_id,item.file_name,item.file_type,item.file_size,item.expires_at]);
+      return;
+    }
+    const store = readLocalStore();
+    store.image_uploads = (store.image_uploads || []).filter(i => new Date(i.expires_at).getTime()>Date.now());
+    store.image_uploads.push({...item,chunks:{},ready:false});
+    writeLocalStore(store);
+  },
+  async getImageUpload(id, hash) {
+    const p = getPool();
+    if (p) return (await p.query('SELECT * FROM image_uploads WHERE id=$1 AND token_hash=$2 AND expires_at>NOW()',[id,hash])).rows[0];
+    return (readLocalStore().image_uploads || []).find(i => i.id===id && i.token_hash===hash && new Date(i.expires_at).getTime()>Date.now());
+  },
+  async putImageChunk(id, hash, index, data) {
+    const p = getPool();
+    if (p) return Boolean((await p.query(`UPDATE image_uploads SET chunks=jsonb_set(chunks,ARRAY[$3::text],to_jsonb($4::text))
+      WHERE id=$1 AND token_hash=$2 AND NOT ready AND expires_at>NOW()
+      AND (chunks->>$3::text IS NULL OR chunks->>$3::text=$4) RETURNING id`,[id,hash,String(index),data])).rowCount);
+    const store=readLocalStore();
+    const item=(store.image_uploads || []).find(i => i.id===id && i.token_hash===hash && !i.ready && new Date(i.expires_at).getTime()>Date.now());
+    if (!item || (item.chunks[index] && item.chunks[index]!==data)) return false;
+    item.chunks[index]=data;
+    writeLocalStore(store);return true;
+  },
+  async finishImageUpload(id, hash, type) {
+    const p = getPool();
+    if (p) return p.query("UPDATE image_uploads SET ready=TRUE,file_type=$3,expires_at=NOW()+INTERVAL '24 hours' WHERE id=$1 AND token_hash=$2 AND expires_at>NOW()",[id,hash,type]);
+    const store=readLocalStore();
+    const item=(store.image_uploads || []).find(i=>i.id===id && i.token_hash===hash);
+    if (item) {item.ready=true;item.file_type=type;item.expires_at=new Date(Date.now()+86400000).toISOString();writeLocalStore(store);}
+  },
+  async deleteImageUpload(id, hash) {
+    const p=getPool();
+    if(p) return p.query('DELETE FROM image_uploads WHERE id=$1 AND token_hash=$2',[id,hash]);
+    const store=readLocalStore();store.image_uploads=(store.image_uploads || []).filter(i=>i.id!==id || i.token_hash!==hash);writeLocalStore(store);
+  },
 
   // USERS
   async findUserByEmail(email) {

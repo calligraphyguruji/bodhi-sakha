@@ -1,3 +1,4 @@
+import {MAX_IMAGE_SIZE, IMAGE_CHUNK_SIZE, IMAGE_SIZE_ERROR, isImageFile} from '../utils/uploadLimits.js';
 import { ChatError } from './chatResponse.js';
 
 /**
@@ -12,6 +13,21 @@ function getAuthHeaders() {
     headers['Authorization'] = `Bearer ${token}`;
   }
   return headers;
+}
+
+function readDataURL(file) {
+  return new Promise((resolve,reject)=>{
+    const reader=new FileReader();
+    reader.onload=()=>resolve(reader.result);
+    reader.onerror=()=>reject(new Error('Unable to read this image.'));
+    reader.readAsDataURL(file);
+  });
+}
+async function imageUploadRequest(action,body) {
+  const res=await fetch(`/api/files?action=${action}`,{method:'POST',headers:getAuthHeaders(),body:JSON.stringify(body)});
+  const result=await res.json();
+  if (!res.ok) throw new Error(result?.error?.message || 'Unable to upload this image.');
+  return result;
 }
 
 export const AIService = {
@@ -119,6 +135,22 @@ export const AIService = {
 
   // --- FILE UPLOAD ---
   async uploadFile({ fileName, fileType, fileData, file, conversationId }) {
+    if (file && isImageFile(fileName,fileType)) {
+      if (file.size>MAX_IMAGE_SIZE) throw new Error(IMAGE_SIZE_ERROR);
+      const upload=await imageUploadRequest('image-start',{fileName,fileType,fileSize:file.size,conversationId});
+      const reference={id:upload.id,imageToken:upload.imageToken};
+      try {
+        for (let offset=0,index=0;offset<file.size;offset+=IMAGE_CHUNK_SIZE,index++) {
+          const data=(await readDataURL(file.slice(offset,offset+IMAGE_CHUNK_SIZE))).split(',')[1];
+          await imageUploadRequest('image-chunk',{...reference,index,data});
+        }
+        const result=await imageUploadRequest('image-complete',reference);
+        return {...result.file,imageData:await readDataURL(file)};
+      } catch (error) {
+        await imageUploadRequest('image-discard',reference).catch(()=>{});
+        throw error;
+      }
+    }
     if (file && file.size > 3 * 1024 * 1024) {
       const prepared = await fetch('/api/files?action=prepare', {method:'POST', headers:getAuthHeaders(), body:JSON.stringify({fileName,fileType,fileSize:file.size,conversationId})});
       const data = await prepared.json();
@@ -140,15 +172,24 @@ export const AIService = {
     return data.file;
   },
 
-  async deleteFile(id) {
+  async deleteFile(id, imageToken) {
+    if (imageToken) return imageUploadRequest('image-discard',{id,imageToken});
     const res = await fetch(`/api/files/${encodeURIComponent(id)}`,{method:'DELETE',headers:getAuthHeaders()});
     if (!res.ok) throw new Error('Unable to remove the uploaded file. Please try again.');
   },
 
   async getFileImage(id, signal) {
-    const res = await fetch(`/api/files/${encodeURIComponent(id)}`,{headers:getAuthHeaders(),signal});
-    if (!res.ok) throw new Error('Image unavailable. Please attach it again.');
-    return (await res.json()).imageData;
+    const chunks=[];
+    let type, count=1;
+    for (let index=0;index<count;index++) {
+      const res=await fetch(`/api/files/${encodeURIComponent(id)}?chunk=${index}`,{headers:getAuthHeaders(),signal});
+      if (!res.ok) throw new Error('Image unavailable. Please attach it again.');
+      const result=await res.json();
+      count=result.chunkCount; type=result.fileType;
+      if (!Number.isInteger(count) || count<1 || count>Math.ceil(MAX_IMAGE_SIZE/IMAGE_CHUNK_SIZE) || !['image/jpeg','image/png','image/webp'].includes(type) || typeof result.data!=='string') throw new Error('Invalid image response.');
+      chunks.push(Uint8Array.from(atob(result.data),c=>c.charCodeAt(0)));
+    }
+    return readDataURL(new Blob(chunks,{type}));
   },
 
   // --- IMAGE GENERATION ---

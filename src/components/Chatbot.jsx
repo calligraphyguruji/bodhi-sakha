@@ -235,7 +235,7 @@ function ChatbotSession() {
     setSpeakingMessageId(null);
     const requestId = retry?.requestId || crypto.randomUUID();
     const botId = retry?.botId || `bot_${requestId}`;
-    const serialize = a => ({id:a.id,fileName:a.fileName,fileType:a.fileType,...(!user && a.imageData ? {imageData:a.imageData} : {})});
+    const serialize = a => ({id:a.id,fileName:a.fileName,fileType:a.fileType,...(!user && a.imageToken ? {imageToken:a.imageToken} : !user && a.imageData ? {imageData:a.imageData} : {})});
     const history = retry?.history || messages.filter(m => !m.error && !m.partial).filter((m,i,all) => i >= all.length-97 || m.attachments?.some(a => a.fileType?.startsWith('image/'))).slice(-100).map(m => ({sender:m.sender,text:m.text,attachments:m.attachments?.map(serialize)}));
     const actualMessage = userText.trim() || 'Please analyze the attached documents.';
     const snapshot = {requestId,botId,history,userText,attachments,reasoningMode:retry?.reasoningMode ?? reasoningMode,conversationId:retry?.conversationId || activeConversationId};
@@ -400,7 +400,7 @@ function ChatbotSession() {
             key={activeConversationId || 'new'}
             onSendMessage={handleSendMessage}
             onFileUpload={handleFileUpload}
-            onRemoveAttachment={user ? attachment => AIService.deleteFile(attachment.id) : undefined}
+            onRemoveAttachment={attachment => user || attachment.imageToken ? AIService.deleteFile(attachment.id,attachment.imageToken) : undefined}
             disabled={isTyping}
             reasoningMode={reasoningMode}
             onToggleReasoning={() => setReasoningMode(!reasoningMode)}

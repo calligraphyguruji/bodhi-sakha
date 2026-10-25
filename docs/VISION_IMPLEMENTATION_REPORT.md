@@ -1,6 +1,7 @@
 # Image understanding audit and implementation
 
-Date: 2026-10-25. Changes are local; production has not been redeployed.
+Date: 2026-10-25. Initial vision audit, updated for the 5 MB upload protocol.
+See [current size-change verification](IMAGE_UPLOAD_SIZE.md) for the latest checks and migration requirement.
 
 ## Root cause and audit evidence
 
@@ -20,23 +21,23 @@ Graph discovery tools were not exposed in this session. Investigation used sourc
 
 ## Implemented pipeline
 
-Browser selection or drop → `/api/files` JSON base64 upload → full image decoding/type/size validation → preview plus original bytes → `/api/chat` → owned attachment resolution and message-associated history → Gemini multimodal parts → one Groq vision fallback before output if needed → existing SSE/JSON response and rendering.
+Browser selection or drop → `/api/files` bounded chunk upload → full image decoding/type/size validation → local preview plus server image reference → `/api/chat` → owned attachment resolution and message-associated history → Gemini multimodal parts → one Groq vision fallback before output if needed → existing SSE/JSON response and rendering.
 
 - JPEG, PNG and WebP MIME types and original bytes are preserved. Sharp is the single added runtime dependency, needed to decode pixels and reject corrupt/disguised images rather than merely checking extensions or header bytes.
 - Gemini defaults to the current stable Flash vision model `gemini-3.8-flash`, using the existing REST `generateContent`/`streamGenerateContent` integration and `inlineData` parts. Low thinking is selected for this model within the existing response budget.
 - Groq vision defaults to `qwen/qwen3.8-27b`; its image parts use base64 data URLs. Only a verified image-capable model can be selected from the allowlist. `GROQ_MODEL` remains independent for text chat. Unknown vision overrides skip Groq rather than submitting images to a text model.
 - Both-provider failure returns the requested friendly image-analysis error. Provider output is never combined after streaming starts. Raw provider errors, secrets and pixels are not logged.
-- Images are associated with their original user messages. Signed-in follow-ups use server-loaded history and authenticated attachment IDs, including after reload. Guests retain bytes in message state and send them in history. Necessary image bytes are resent to stateless providers; signed-in browser requests do not resend them.
-- Signed-in originals use the existing private database TEXT field, with no new storage account or migration. Thumbnails reload through an authenticated, ownership-checked endpoint with no-store headers. Conversation list responses exclude image bytes. Removing unsent uploads deletes their records; conversation deletion removes associated uploads. Abandoned uploads not removed by the user remain private uploaded-file records.
+- Images are associated with their original user messages. Signed-in follow-ups use server-loaded history and authenticated attachment IDs, including after reload. Guests retain previews locally and send capability-protected image references in history; temporary originals expire after 24 hours. Necessary image bytes are resent to stateless providers; signed-in browser requests do not resend them.
+- Signed-in originals use the existing private database TEXT field. The additive `image_uploads` staging table requires `npm run db:migrate`; no new storage account or environment variable is needed. Thumbnails reload in bounded chunks through an authenticated, ownership-checked endpoint with no-store headers. Conversation list responses exclude image bytes. Removing unsent uploads deletes their records; conversation deletion removes associated uploads. Abandoned uploads not removed by the user remain private uploaded-file records.
 - Document extraction remains separate. PDF regression tests exercise real extraction and subsequent text context. Unrelated text, weather/current-information and image-generation routing remains available after image turns.
 
 Official capability/format checks: [Gemini 3.8 Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash), [Gemini REST parts](https://ai.google.dev/api/generate-content#Part), [Groq vision](https://console.groq.com/docs/vision).
 
 ## Limits and remaining behavior
 
-- Two MiB per image; optional `MAX_IMAGE_BYTES` can lower this. Three images and 2,800,000 decoded bytes across a conversation, matching the default Groq model's three-image maximum and leaving room below the Vercel request ceiling. Start a new chat to analyze further images.
+- Five MiB per image (5,242,880 bytes, inclusive), shared across frontend and backend by `MAX_IMAGE_SIZE`. Three images per conversation; no combined upload-byte cap. Groq separately limits its encoded provider request to 20 MB; Gemini supports 100 MB inline payloads.
 - Images above 24 megapixels and animated images are rejected. Screenshots are not silently compressed. Large images must be resized by the user.
-- Guest image context disappears on reload. Signed-in context persists until deletion. Legacy images must be reuploaded because their original bytes were never retained.
+- Guest chat state disappears on reload; temporary image references expire after 24 hours. Signed-in context persists until deletion. Legacy images must be reuploaded because their original bytes were never retained.
 - Missing/deleted image context produces an explicit reattachment error, not invented visual descriptions.
 - OCR, code explanation, diagrams, handwriting and recognition quality depend on provider inference and legibility. Mocked tests prove transmission and routing, not perception accuracy.
 - Existing unpaginated conversation responses can still become large through text/generated-image history. This work keeps uploaded image originals out of those responses.
@@ -76,7 +77,6 @@ Existing server-side `GEMINI_API_KEY` and `GROQ_API_KEY` remain required for the
 ```dotenv
 GEMINI_VISION_MODEL=gemini-3.8-flash
 GROQ_VISION_MODEL=qwen/qwen3.8-27b
-MAX_IMAGE_BYTES=2097152
 ```
 
 No VITE-prefixed secrets, new backend or paid storage service is introduced. Existing `BLOB_READ_WRITE_TOKEN` is still only needed for large document uploads, not the bounded image workflow. The existing image-generation configuration is unchanged.
@@ -87,7 +87,7 @@ The source builds for Vercel. Before declaring production ready, configure/confi
 
 | File | Purpose |
 | --- | --- |
-| `.env.example` | Optional vision model and image-byte-limit configuration |
+| `.env.example` | Optional vision models; fixed image size no longer requires an environment variable |
 | `docs/API.md` | Upload, private retrieval, multimodal request/history, limits and errors contract |
 | `docs/VISION_IMPLEMENTATION_REPORT.md` | Audit evidence, implementation, verification and release report |
 | `lib/server/vision.js` | Image decoding/validation, limits, vision instructions and private history resolution |

@@ -3,17 +3,32 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import sharp from 'sharp';
+import {MAX_IMAGE_SIZE,IMAGE_SIZE_ERROR} from '../src/utils/uploadLimits.js';
 // No API credentials and no database. Intercept all traffic with deterministic fixtures.
 const browser = await chromium.launch({headless:true,...(process.env.CHROME_PATH ? {executablePath:process.env.CHROME_PATH} : {})});
 try {
   const page=await browser.newPage();
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  let calls=0; const sent=[];
+  let calls=0; const sent=[]; const uploads=new Map(); const uploadSizes=[];
   await page.route('https://bodhi.test/**',async route=>{
     const url=new URL(route.request().url());
     if(url.pathname==='/api/files') {
-      const data = route.request().postDataJSON();
-      return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({file:{id:`file_${Date.now()}`,fileName:data.fileName,fileType:data.fileType,imageData:data.fileData,extractedText:''}})});
+      const data=route.request().postDataJSON();
+      if(url.searchParams.get('action')==='image-start') {
+        const id=`file_${crypto.randomUUID()}`,imageToken='a'.repeat(64);
+        uploads.set(id,{...data,parts:[]});
+        return route.fulfill({json:{id,imageToken}});
+      }
+      if(url.searchParams.get('action')==='image-chunk') {
+        uploadSizes.push(route.request().postData().length);
+        uploads.get(data.id).parts[data.index]=data.data;
+        return route.fulfill({json:{success:true}});
+      }
+      if(url.searchParams.get('action')==='image-complete') {
+        const file=uploads.get(data.id);
+        return route.fulfill({json:{file:{id:data.id,imageToken:data.imageToken,fileName:file.fileName,fileType:file.fileType,fileSize:file.fileSize,extractedText:''}}});
+      }
+      if(url.searchParams.get('action')==='image-discard') return route.fulfill({json:{success:true}});
     }
     if(url.pathname==='/api/chat') {
       calls++;sent.push(route.request().postDataJSON());
@@ -58,7 +73,7 @@ try {
   await page.waitForFunction(()=>!document.querySelector('.typing-row') && [...document.querySelectorAll('.bot-bubble')].filter(el=>el.textContent==='A clear answer.').length===3);
   assert.equal(await page.locator('.message-attachment-image').count(),2);
   assert.equal(sent.at(-1).attachments.length,2);
-  assert.ok(sent.at(-1).attachments.every(a=>a.imageData.startsWith('data:image/png;base64,')));
+  assert.ok(sent.at(-1).attachments.every(a=>a.imageToken && !a.imageData));
   await input.fill('What is its time complexity?');
   await page.getByRole('button',{name:'Send message',exact:true}).click();
   await page.waitForFunction(()=>!document.querySelector('.typing-row') && [...document.querySelectorAll('.bot-bubble')].filter(el=>el.textContent==='A clear answer.').length===4);
@@ -73,9 +88,11 @@ try {
   await fileInput.setInputFiles({name:'bad.svg',mimeType:'image/svg+xml',buffer:Buffer.from('<svg/>')});
   await page.getByRole('alert').waitFor();
   assert.match(await page.getByRole('alert').innerText(),/Unsupported file/);
-  await fileInput.setInputFiles({name:'big.png',mimeType:'image/png',buffer:Buffer.alloc(2100000)});
-  await page.getByText(/Images must be no larger than 2 MB/).waitFor();
+  await fileInput.setInputFiles({name:'big.png',mimeType:'image/png',buffer:Buffer.alloc(MAX_IMAGE_SIZE+1)});
+  await page.getByText(IMAGE_SIZE_ERROR,{exact:false}).waitFor();
   assert.ok(await page.locator('.composer-wrapper').evaluate(el=>el.getBoundingClientRect().right<=window.innerWidth));
+  assert.ok(uploadSizes.every(size=>size<1500000));
+  assert.equal(await page.getByText(/Up to 5 MB per image/).count(),1);
   assert.deepEqual(errors,[]);
   console.log('Browser checks passed: send, response, friendly error, retry, stable request ID, no duplicate user turn, context preservation, mobile multi-image upload, preview, remove, drag/drop, sent images, follow-up bytes, unsupported/size errors, no uncaught exceptions.');
 } finally {await browser.close();}

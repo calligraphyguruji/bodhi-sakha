@@ -83,8 +83,8 @@ Every gateway response includes a server-generated `X-Request-ID`. Runtime Logs 
 
 Upload JPEG, PNG or WebP through `/api/files`. The server decodes all pixels using
 Sharp, checks the actual format against the claimed MIME, rejects corruption,
-animation and images above 24 megapixels. Each image is capped at 2 MiB;
-`MAX_IMAGE_BYTES` can lower that limit. Documents retain their existing 15 MiB
+animation and images above 24 megapixels. Each image is capped at exactly 5 MiB
+(5,242,880 bytes), inclusive, using the shared `MAX_IMAGE_SIZE` constant. Documents retain their existing 15 MiB
 limit and extraction workflow. No image resizing or lossy compression occurs.
 
 Successful image uploads also return `imageData`, a validated MIME-preserving
@@ -95,19 +95,19 @@ required. Removing an unsent attachment deletes the signed-in upload. Deleting a
 conversation cascades to its uploaded images. Images uploaded and then abandoned
 without removal remain ordinary private uploaded-file records.
 
-Guests send `attachments: [{id,fileName,fileType,imageData}]` on the current turn,
-and the same attachment fields inside the original user turn of `history` on
-follow-ups. These bytes live only in browser memory; reloading a guest chat loses
-its image context. Signed-in clients send `attachmentIds`, an owned
+Guests send `attachments: [{id,fileName,fileType,imageToken}]` on the current turn,
+and the same references inside the original user turn of `history` on follow-ups.
+Temporary guest bytes expire after 24 hours; guest chat state still disappears on reload. Signed-in clients send `attachmentIds`, an owned
 `conversationId`, and stable `requestId`; the server resolves images from the
 authenticated database records and uses persisted message history. Browser image
-bytes are not retransmitted on signed-in follow-ups. Up to three images totaling
-2,800,000 decoded bytes may be included across a conversation; exceeding this
-returns `VISION_LIMIT` (413) with instructions to start a new chat. The gateway
+bytes are not retransmitted on signed-in follow-ups. Up to three images, each up to 5 MiB, may be included across a conversation;
+exceeding the image count returns `VISION_LIMIT` (413) with instructions to start a new chat. The gateway
 still caps JSON at 4.25 MiB, below Vercel's 4.5 MB function limit.
 
-`GET /api/files/:id` requires authentication and returns `{imageData}` for an owned
-image, with `Cache-Control: private, no-store`. Other users get 404. Conversation
+`GET /api/files/:id?chunk=N` requires authentication and returns
+`{data,fileType,chunkCount}` for one 1 MiB binary slice encoded as Base64,
+with `Cache-Control: private, no-store`. The client reconstructs the preview.
+The legacy whole-image response remains available only for files up to 3 MiB. Other users get 404. Conversation
 responses exclude stored image bytes; thumbnails load through this private route.
 Missing, deleted or legacy images return `IMAGE_CONTEXT_MISSING` (422), asking the
 user to reattach. Previously discarded originals cannot be recovered.
@@ -129,3 +129,47 @@ no-fallback behavior. After output starts the server never mixes providers.
 right now. Please try again shortly.” Image contents and secrets are never logged.
 Images are treated as untrusted data, and response instructions require grounded
 observations and explicit uncertainty for unreadable content.
+
+
+### Bounded image upload protocol (5 MiB per original)
+
+Run `npm run db:migrate` against the deployment database before releasing this
+protocol. The additive `image_uploads` staging table uses the existing `DATABASE_URL`.
+No new credentials, paid storage service, or persistent backend is needed. Existing
+provider keys and environment files remain unchanged; the legacy `MAX_IMAGE_BYTES`
+setting is no longer consulted because the frontend and backend share one fixed limit.
+
+Every image selected by the current client uses these JSON requests to `/api/files`:
+
+1. `POST ?action=image-start` with `{fileName,fileType,fileSize,conversationId?}`.
+   Returns `{id,imageToken,chunkSize}`. Size is checked before staging data.
+2. `POST ?action=image-chunk` with `{id,imageToken,index,data}`. Each `data` is an
+   independently Base64-encoded slice of up to 1 MiB; each JSON body is below 1.5 MB.
+   The server enforces expected byte length and canonical Base64. Identical retries
+   are allowed; changing a chunk or adding data after completion is rejected.
+3. `POST ?action=image-complete` with `{id,imageToken}`. All slices are required;
+   reassembled bytes are decoded, validated and stored before returning small file
+   metadata. Signed-in originals move to `uploaded_files`; guests retain a temporary
+   capability-protected reference. No large image data URL is returned.
+4. `POST ?action=image-discard` with `{id,imageToken}` removes an abandoned/guest upload.
+
+Capability tokens contain 256 random bits, are stored as SHA-256 hashes and are
+bound to the authenticated owner (or anonymous upload). Incomplete uploads expire
+in 15 minutes; completed guest images expire in 24 hours. Expired records cannot
+be read, and are physically pruned when another upload starts. Do not put tokens
+in URLs or logs. Serverless instances share chunks through Postgres, not `/tmp`.
+Chunk writes and private chunk reads use a separate 120/minute transfer bucket;
+starting/completing uploads and chat retain the existing AI rate limit.
+
+The browser retains local previews but serializes only image references. Original
+bytes are recovered server-side and sent to Gemini or Groq. Multiple uploads have
+independent 5 MiB limits; there is no former combined conversation-byte cap. Groq's
+separate 20 MB encoded-request ceiling still applies: if three large images exceed
+it, that fallback returns a safe vision error, never drops an image or uses a text
+model. Gemini's current inline request allowance is 100 MB. See the current
+[Gemini file input limits](https://ai.google.dev/gemini-api/docs/file-input-methods)
+and [Groq vision limits](https://console.groq.com/docs/vision).
+
+Oversized originals return HTTP 413 with: “Image size exceeds 5 MB. Please upload
+an image smaller than 5 MB.” Exactly 5,242,880 bytes is accepted. PDF and document
+uploads retain their original inline/private Blob paths and 15 MiB limit.

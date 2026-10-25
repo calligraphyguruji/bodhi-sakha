@@ -19,6 +19,7 @@ Stop the simulation with Ctrl+C.
 ## Observations
 
 <!-- begin:observations -->
+2026-10-25 (5 MB update): Direct fixture HTTP run passed 56 API/provider tests, including 1/3/4.9/5 MiB original-byte equality, Gemini failures to Groq vision, and independent multiple-image limits. Both provider paths served traffic. The existing Postman-runner startup limitation remains; no successful Postman simulation run is claimed.
 2026-10-25: Direct HTTP execution of the same mock handler served both Gemini and Groq adapter paths, including multimodal failure/fallback tests. Neither Postman simulation member served traffic because its runner did not start.
 <!-- end:observations -->
 

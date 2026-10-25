@@ -64,7 +64,8 @@ async function handler(req, res) {
       const ip = process.env.VERCEL ? (req.headers?.['x-vercel-forwarded-for'] || req.socket?.remoteAddress || 'unknown') : (req.socket?.remoteAddress || 'local');
       const identity = user?.id || ip;
       const digest = crypto.createHash('sha256').update(String(identity)).digest('hex');
-      const group = route === 'auth' ? 'auth' : ['chat','images','files'].includes(route) ? 'ai' : 'crud';
+      const imageTransfer = route === 'files' && ((req.method === 'POST' && url.searchParams.get('action') === 'image-chunk') || (req.method === 'GET' && url.searchParams.has('chunk')));
+      const group = imageTransfer ? 'transfer' : route === 'auth' ? 'auth' : ['chat','images','files'].includes(route) ? 'ai' : 'crud';
       if (!await consumeRateLimit(`${group}:${digest}`, group === 'auth' ? 10 : group === 'ai' ? 20 : 120)) {
         res.setHeader('Retry-After','60'); throw new AppError('RATE_LIMIT',429);
       }
